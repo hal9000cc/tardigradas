@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import importlib
+from collections.abc import Mapping
 from dataclasses import dataclass
-from time import perf_counter
-from typing import Any, Callable
+from typing import Any, Callable, cast
 
 import numpy as np
 
@@ -32,20 +32,18 @@ class PopulationBarEntry:
 @dataclass(frozen=True)
 class ProgressSnapshot:
     iteration: int
-    best_score: float | None
-    step_score: float | None
     population_mean_score: float | None
     population_max_score: float | None
+    custom_score: float | None
     score_improvement: float | None
     killed_doubles: int
-    elapsed_time_sec: float
     population_bars: tuple[PopulationBarEntry, ...]
     adaptive_mode: bool
     adaptive_bit_probabilities: dict[str, float]
     adaptive_float_probabilities: dict[str, float]
 
 
-def _optional_float(value: object) -> float | None:
+def _optional_float(value: Any) -> float | None:
     if value is None:
         return None
     return float(value)
@@ -59,6 +57,16 @@ def _best_score_from_engine(engine: Tardigradas) -> float | None:
     if engine.scores.size:
         return float(np.max(engine.scores))
     return None
+
+
+def _custom_score_from_vector(value: Any) -> float | None:
+    if value is None:
+        return None
+
+    custom_scores = np.asarray(value, dtype=float).reshape(-1)
+    if custom_scores.size < 2:
+        return None
+    return float(custom_scores[1])
 
 
 def _score_aligned_origins(engine: Tardigradas) -> list[dict[str, object]]:
@@ -107,13 +115,20 @@ def _adaptive_probabilities(engine: Tardigradas) -> tuple[bool, dict[str, float]
     if adaptive_state.get("mode") != "adaptive":
         return False, {}, {}
 
+    raw_bit_probabilities = adaptive_state.get("bit_probabilities", {})
+    raw_float_probabilities = adaptive_state.get("float_probabilities", {})
+    bit_mapping = cast(Mapping[str, Any], raw_bit_probabilities) if isinstance(raw_bit_probabilities, Mapping) else {}
+    float_mapping = (
+        cast(Mapping[str, Any], raw_float_probabilities) if isinstance(raw_float_probabilities, Mapping) else {}
+    )
+
     bit_probabilities = {
         str(name): float(value)
-        for name, value in dict(adaptive_state.get("bit_probabilities", {})).items()
+        for name, value in bit_mapping.items()
     }
     float_probabilities = {
         str(name): float(value)
-        for name, value in dict(adaptive_state.get("float_probabilities", {})).items()
+        for name, value in float_mapping.items()
     }
     return True, bit_probabilities, float_probabilities
 
@@ -122,7 +137,10 @@ def _history_series(
     history: list[ProgressSnapshot],
     extractor: Callable[[ProgressSnapshot], float | None],
 ) -> np.ndarray:
-    values = [np.nan if extractor(snapshot) is None else float(extractor(snapshot)) for snapshot in history]
+    values: list[float] = []
+    for snapshot in history:
+        extracted = extractor(snapshot)
+        values.append(np.nan if extracted is None else float(extracted))
     return np.array(values, dtype=float)
 
 
@@ -133,12 +151,14 @@ class _MatplotlibProgressRenderer:
         self._title = title
 
         self._pyplot.ion()
-        self._figure, axes = self._pyplot.subplots(2, 2, figsize=(14, 8))
-        self._score_axis = axes[0, 0]
-        self._service_axis = axes[0, 1]
-        self._population_axis = axes[1, 0]
-        self._adaptive_axis = axes[1, 1]
-        self._service_secondary_axis = self._service_axis.twinx()
+        self._figure = self._pyplot.figure(figsize=(15, 10))
+        grid = self._figure.add_gridspec(6, 2, hspace=0.9, wspace=0.35)
+        self._score_axis = self._figure.add_subplot(grid[:3, 0])
+        self._custom_score_axis = self._figure.add_subplot(grid[3:, 0])
+        self._population_axis = self._figure.add_subplot(grid[:2, 1])
+        self._improved_axis = self._figure.add_subplot(grid[2:4, 1])
+        self._adaptive_axis = self._figure.add_subplot(grid[4:, 1])
+        self._improved_secondary_axis = self._improved_axis.twinx()
 
     def render(self, history: list[ProgressSnapshot]) -> None:
         if not history:
@@ -148,14 +168,16 @@ class _MatplotlibProgressRenderer:
         iterations = [snapshot.iteration for snapshot in history]
 
         self._score_axis.clear()
-        self._service_axis.clear()
-        self._service_secondary_axis.clear()
+        self._custom_score_axis.clear()
         self._population_axis.clear()
+        self._improved_axis.clear()
+        self._improved_secondary_axis.clear()
         self._adaptive_axis.clear()
 
         self._plot_scores(iterations, history)
-        self._plot_service_metrics(iterations, history)
+        self._plot_custom_score(iterations, history)
         self._plot_population(latest)
+        self._plot_improved(iterations, history)
         self._plot_adaptive(iterations, history, latest)
 
         self._figure.suptitle(f"{self._title} · epoch {latest.iteration}")
@@ -167,8 +189,6 @@ class _MatplotlibProgressRenderer:
 
     def _plot_scores(self, iterations: list[int], history: list[ProgressSnapshot]) -> None:
         series = [
-            ("best_score", lambda item: item.best_score),
-            ("step_score", lambda item: item.step_score),
             ("population_mean_score", lambda item: item.population_mean_score),
             ("population_max_score", lambda item: item.population_max_score),
         ]
@@ -184,38 +204,49 @@ class _MatplotlibProgressRenderer:
         if self._score_axis.lines:
             self._score_axis.legend(loc="best")
 
-    def _plot_service_metrics(self, iterations: list[int], history: list[ProgressSnapshot]) -> None:
+    def _plot_custom_score(self, iterations: list[int], history: list[ProgressSnapshot]) -> None:
+        custom_score_values = _history_series(history, lambda item: item.custom_score)
+        if np.isnan(custom_score_values).all():
+            self._custom_score_axis.text(
+                0.5,
+                0.5,
+                "Custom score is unavailable",
+                ha="center",
+                va="center",
+                transform=self._custom_score_axis.transAxes,
+            )
+            self._custom_score_axis.set_title("Custom score")
+            return
+
+        self._custom_score_axis.plot(iterations, custom_score_values, label="custom_score", color="tab:orange")
+        self._custom_score_axis.set_title("Custom score")
+        self._custom_score_axis.set_xlabel("Epoch")
+        self._custom_score_axis.set_ylabel("Custom score")
+        self._custom_score_axis.legend(loc="best")
+
+    def _plot_improved(self, iterations: list[int], history: list[ProgressSnapshot]) -> None:
         improvement_values = _history_series(history, lambda item: item.score_improvement)
-        elapsed_values = _history_series(history, lambda item: item.elapsed_time_sec)
         killed_doubles_values = _history_series(history, lambda item: float(item.killed_doubles))
 
         if not np.isnan(improvement_values).all():
-            self._service_axis.plot(iterations, improvement_values, label="score_improvement", color="tab:blue")
-        if not np.isnan(elapsed_values).all():
-            self._service_axis.plot(
-                iterations,
-                elapsed_values,
-                label="elapsed_time_sec",
-                color="tab:gray",
-                linestyle="--",
-            )
+            self._improved_axis.plot(iterations, improvement_values, label="score_improvement", color="tab:blue")
         if not np.isnan(killed_doubles_values).all():
-            self._service_secondary_axis.plot(
+            self._improved_secondary_axis.plot(
                 iterations,
                 killed_doubles_values,
                 label="killed_doubles",
                 color="tab:purple",
             )
 
-        self._service_axis.set_title("Improvement and service metrics")
-        self._service_axis.set_xlabel("Epoch")
-        self._service_axis.set_ylabel("Improvement / time")
-        self._service_secondary_axis.set_ylabel("Killed doubles")
+        self._improved_axis.set_title("Improved")
+        self._improved_axis.set_xlabel("Epoch")
+        self._improved_axis.set_ylabel("Score improvement")
+        self._improved_secondary_axis.set_ylabel("Killed doubles")
 
-        handles = list(self._service_axis.lines) + list(self._service_secondary_axis.lines)
+        handles = list(self._improved_axis.lines) + list(self._improved_secondary_axis.lines)
         if handles:
             labels = [line.get_label() for line in handles]
-            self._service_axis.legend(handles, labels, loc="best")
+            self._improved_axis.legend(handles, labels, loc="best")
 
     def _plot_population(self, latest: ProgressSnapshot) -> None:
         if not latest.population_bars:
@@ -292,7 +323,6 @@ class _MatplotlibProgressRenderer:
         self._adaptive_axis.set_title("Adaptive crossover probabilities")
         self._adaptive_axis.set_xlabel("Epoch")
         self._adaptive_axis.set_ylabel("Probability")
-        self._adaptive_axis.set_ylim(0.0, 1.0)
         if self._adaptive_axis.lines:
             self._adaptive_axis.legend(loc="best")
 
@@ -308,24 +338,23 @@ class ProgressPanel:
         self.history: list[ProgressSnapshot] = []
         self.initial_best_score: float | None = None
         self._renderer = renderer
-        self._started_at = perf_counter()
 
     @property
     def rendering_available(self) -> bool:
         return self._renderer is not None
 
     def capture_initial_state(self, engine: Tardigradas) -> None:
-        self._started_at = perf_counter()
         initial_best_score = _best_score_from_engine(engine)
         if initial_best_score is not None:
             self.initial_best_score = initial_best_score
 
     def build_snapshot(self, engine: Tardigradas) -> ProgressSnapshot:
-        best_score = _optional_float(engine.best_score)
-        step_score = _optional_float(engine.step_score)
         population_mean_score = float(np.mean(engine.scores)) if engine.scores.size else None
         population_max_score = float(np.max(engine.scores)) if engine.scores.size else None
-        current_best_score = best_score if best_score is not None else step_score
+        custom_score = _custom_score_from_vector(engine.step_custom_score)
+        current_best_score = _optional_float(engine.best_score)
+        if current_best_score is None:
+            current_best_score = _optional_float(engine.step_score)
         if current_best_score is None:
             current_best_score = population_max_score
 
@@ -340,13 +369,11 @@ class ProgressPanel:
 
         return ProgressSnapshot(
             iteration=int(engine.iterations),
-            best_score=best_score,
-            step_score=step_score,
             population_mean_score=population_mean_score,
             population_max_score=population_max_score,
+            custom_score=custom_score,
             score_improvement=score_improvement,
             killed_doubles=int(engine.n_killed_doubles),
-            elapsed_time_sec=round(perf_counter() - self._started_at, 3),
             population_bars=_build_population_bars(engine),
             adaptive_mode=adaptive_mode,
             adaptive_bit_probabilities=adaptive_bit_probabilities,

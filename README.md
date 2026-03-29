@@ -258,8 +258,9 @@ policy = CrossoverPolicy.adaptive(
 
 Панель отображает:
 
-- `best_score`, `step_score`, `population_mean_score`, `population_max_score`;
-- `score_improvement`, `killed_doubles`, `elapsed_time_sec`;
+- график `Score` с `population_mean_score` и `population_max_score`;
+- отдельный график `Custom score` для второй компоненты fitness-вектора, если она есть;
+- график `Improved` с `score_improvement` и `killed_doubles`;
 - bar chart текущей популяции, отсортированной по убыванию score, с цветами по происхождению особей;
 - adaptive probabilities операторов кроссовера, если включена adaptive policy.
 
