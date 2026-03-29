@@ -22,6 +22,21 @@ def build_dummy_schema(
     )
 
 
+def build_fixed_schema() -> ChromosomeSchema:
+    return ChromosomeSchema(
+        gen_types=[GenType.bit, GenType.int, GenType.float],
+        bounds=([1, 2, 0.5], [1, 2, 0.5]),
+        comments=["fixed-bit", "fixed-int", "fixed-float"],
+        groups=[0, 0, 1],
+        defaults=[1.0, 2.0, 0.5],
+        defaults_probability=[1.0, 1.0, 1.0],
+    )
+
+
+def build_population(tardigradas: Tardigradas, chromosomes: list[list[float]]) -> list[Individual]:
+    return [tardigradas.create_individual(chromo=chromo) for chromo in chromosomes]
+
+
 class DummyProblem(Problem):
     @staticmethod
     def init_environment(tardigradas: Tardigradas) -> None:
@@ -40,6 +55,24 @@ class DefaultsProblem(DummyProblem):
     @staticmethod
     def gen_info(tardigradas: Tardigradas) -> ChromosomeSchema:
         return build_dummy_schema(defaults_probability=[1.0, 1.0, 1.0])
+
+
+class FixedGenesProblem(DummyProblem):
+    @staticmethod
+    def gen_info(tardigradas: Tardigradas) -> ChromosomeSchema:
+        return build_fixed_schema()
+
+
+class ConstantFitnessProblem(DummyProblem):
+    @staticmethod
+    def fitness(individual: Individual) -> float:
+        return 1.0
+
+
+class NonNegativeFloatProblem(DummyProblem):
+    @staticmethod
+    def chromo_valid(individual: Individual) -> bool:
+        return float(individual[2]) >= 0.0
 
 
 class RejectAllProblem(DummyProblem):
