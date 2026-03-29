@@ -39,6 +39,12 @@ def state_dict(engine: Any) -> dict[str, Any]:
         "best_individual": best_individual,
         "step_best_individual": step_best_individual,
         "population": [individual.chromo for individual in engine.population],
+        "population_origins": [dict(origin) for origin in getattr(engine, "population_origins", [])],
+        "crossover_policy": getattr(engine, "crossover_policy", None),
+        "adaptive_bit_uses": dict(getattr(engine, "_adaptive_bit_uses", {})),
+        "adaptive_bit_successes": dict(getattr(engine, "_adaptive_bit_successes", {})),
+        "adaptive_float_uses": dict(getattr(engine, "_adaptive_float_uses", {})),
+        "adaptive_float_successes": dict(getattr(engine, "_adaptive_float_successes", {})),
     }
 
 
@@ -56,6 +62,7 @@ def restore_from_dict(engine: Any, state: dict[str, Any]) -> None:
     engine.scores = np.array(state.get("scores", []), dtype=float)
     engine.best_score = state.get("best_score")
     engine.best_iteration = int(state.get("best_iteration", 0))
+    engine.crossover_policy = state.get("crossover_policy", engine.crossover_policy)
 
     population = state.get("population", [])
     engine.population = [engine.create_individual(chromo=chromo) for chromo in population]
@@ -67,6 +74,18 @@ def restore_from_dict(engine: Any, state: dict[str, Any]) -> None:
     engine.step_best_individual = (
         engine.create_individual(chromo=step_best_individual) if step_best_individual is not None else engine.best_individual
     )
+
+    engine._reset_crossover_runtime_state()
+    restored_origins = state.get("population_origins")
+    if restored_origins is None:
+        engine.population_origins = [engine._default_population_origin("restored") for _ in engine.population]
+    else:
+        engine.population_origins = [engine._clone_population_origin(origin) for origin in restored_origins]
+
+    engine._adaptive_bit_uses.update(state.get("adaptive_bit_uses", {}))
+    engine._adaptive_bit_successes.update(state.get("adaptive_bit_successes", {}))
+    engine._adaptive_float_uses.update(state.get("adaptive_float_uses", {}))
+    engine._adaptive_float_successes.update(state.get("adaptive_float_successes", {}))
 
     engine.full_scores = np.zeros((0, 1), dtype=float)
     engine.fitness_progress_fun = None

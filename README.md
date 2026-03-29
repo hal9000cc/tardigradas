@@ -16,6 +16,8 @@
 - инициализирует популяцию случайными особями;
 - выполняет ранговый отбор родителей;
 - поддерживает кроссовер и мутацию;
+- позволяет явно выбирать разные операторы кроссовера для `bit` и `float`/`int` генов;
+- поддерживает adaptive-выбор операторов кроссовера по статистике успеха;
 - добавляет «свежую кровь» в популяцию;
 - удаляет дубликаты;
 - сохраняет и восстанавливает состояние поиска через `pickle`.
@@ -35,6 +37,7 @@ pip install -e .
 - `src/tardigradas/problem.py` — базовый абстрактный класс задачи;
 - `src/tardigradas/individual.py` — объект отдельной особи;
 - `src/tardigradas/schema.py` — dataclass `ChromosomeSchema`;
+- `src/tardigradas/crossover_policy.py` — конфигурация explicit/adaptive политик кроссовера;
 - `src/tardigradas/operators/` — селекция, кроссовер и мутация;
 - `src/tardigradas/serialization.py` — сериализация состояния;
 - `src/tardigradas/gen_types.py` — перечисления типов генов и стратегий кроссовера.
@@ -101,7 +104,16 @@ return [-42.0, 0.1, 7.5]
 ## Пример использования
 
 ```python
-from tardigradas import ChromosomeSchema, GenType, Individual, Problem, Tardigradas
+from tardigradas import (
+    ChromosomeSchema,
+    CrossoverBitType,
+    CrossoverFloatType,
+    CrossoverPolicy,
+    GenType,
+    Individual,
+    Problem,
+    Tardigradas,
+)
 
 
 class SphereProblem(Problem):
@@ -137,6 +149,10 @@ ga = Tardigradas(
     gen_mutation_fraction=0.1,
     fitness_environment=None,
     n_elits=2,
+    crossover_policy=CrossoverPolicy.explicit(
+        bit=CrossoverBitType.uniform,
+        float=CrossoverFloatType.BLX,
+    ),
 )
 
 ga.population_init()
@@ -154,7 +170,66 @@ print("Лучшая особь:", ga.best_individual.chromo)
 - `fresh_blood_fraction` — доля случайно добавляемых особей;
 - `gen_mutation_fraction` — интенсивность мутации;
 - `fitness_environment` — произвольное внешнее окружение;
-- `n_elits` — число элитных особей.
+- `n_elits` — число элитных особей;
+- `crossover_policy` — explicit/adaptive политика выбора операторов кроссовера.
+
+## Настройка кроссоверов
+
+По умолчанию, если `crossover_policy` не передан, библиотека использует:
+
+```python
+CrossoverPolicy.explicit(
+    bit=CrossoverBitType.uniform,
+    float=CrossoverFloatType.uniform,
+)
+```
+
+`int`-гены обрабатываются через ту же float-ветку кроссоверов с последующим округлением результата.
+
+### Явный выбор операторов
+
+```python
+from tardigradas import CrossoverBitType, CrossoverFloatType, CrossoverPolicy
+
+
+policy = CrossoverPolicy.explicit(
+    bit=CrossoverBitType.two_point,
+    float=CrossoverFloatType.BLX,
+)
+```
+
+Доступные bit-операторы:
+- `CrossoverBitType.uniform`
+- `CrossoverBitType.one_point`
+- `CrossoverBitType.two_point`
+
+Доступные float-операторы:
+- `CrossoverFloatType.uniform`
+- `CrossoverFloatType.arithmetic`
+- `CrossoverFloatType.BLX`
+
+### Adaptive-выбор операторов
+
+```python
+from tardigradas import CrossoverBitType, CrossoverFloatType, CrossoverPolicy
+
+
+policy = CrossoverPolicy.adaptive(
+    bit_candidates=[
+        CrossoverBitType.uniform,
+        CrossoverBitType.one_point,
+        CrossoverBitType.two_point,
+    ],
+    float_candidates=[
+        CrossoverFloatType.uniform,
+        CrossoverFloatType.arithmetic,
+        CrossoverFloatType.BLX,
+    ],
+    reward="elite_survival",
+)
+```
+
+В текущей версии adaptive-режим поддерживает reward-стратегию `"elite_survival"`: оператор получает успех, если ребёнок, созданный им, попадает в элитную часть популяции на следующем шаге.
 
 ## Основные методы
 
@@ -184,6 +259,7 @@ ga.restore_from_file("state.pkl")
 - описание задачи отделено от представления особи;
 - хрупкий кортеж из `gen_info()` заменён на `ChromosomeSchema`;
 - логика операторов выделена в отдельный пакет;
+- политики кроссовера выделены в отдельный публичный API;
 - сериализация вынесена из движка;
 - удаление дубликатов работает через хеширование, а не через двойной цикл `O(n^2)`;
 - движок хранит популяцию как `list[Individual]`, а не как `numpy`-массив объектов.
@@ -192,7 +268,7 @@ ga.restore_from_file("state.pkl")
 
 - добавить автоматические тесты;
 - добавить отдельные примеры использования;
-- при необходимости сделать стратегии кроссовера и мутации конфигурируемыми на уровне API.
+- при необходимости расширить набор adaptive reward-стратегий и метрик успеха операторов.
 
 ## Опциональный MNIST benchmark с PyTorch
 

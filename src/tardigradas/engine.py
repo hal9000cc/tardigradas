@@ -6,10 +6,20 @@ from typing import Callable, Optional, Sequence, Union
 
 import numpy as np
 
+from .crossover_policy import CrossoverPolicy
 from .exceptions import TardigradasException
-from .gen_types import GenType
+from .gen_types import CrossoverBitType, CrossoverFloatType, GenType
 from .individual import Individual
-from .operators import crossover_uniform, mutate_chromosome, rank, select_parents
+from .operators import (
+    crossover_arithmetic,
+    crossover_blx,
+    crossover_one_point,
+    crossover_two_point,
+    crossover_uniform,
+    mutate_chromosome,
+    rank,
+    select_parents,
+)
 from .problem import Problem
 from .schema import ChromosomeSchema
 from .serialization import restore_from_dict, restore_from_file, save_to_file, state_dict
@@ -25,6 +35,7 @@ class Tardigradas:
         gen_mutation_fraction: float = 0.1,
         fitness_environment: Optional[object] = None,
         n_elits: Optional[int] = None,
+        crossover_policy: Optional[CrossoverPolicy] = None,
     ) -> None:
         if not issubclass(problem, Problem):
             raise TypeError("problem must be a Problem subclass")
@@ -42,6 +53,9 @@ class Tardigradas:
         self.fresh_blood_fraction = float(fresh_blood_fraction)
         self.gen_mutation_fraction = float(gen_mutation_fraction)
         self.n_elits = 1 if n_elits is None else int(n_elits)
+        if crossover_policy is not None and not isinstance(crossover_policy, CrossoverPolicy):
+            raise TypeError("crossover_policy must be CrossoverPolicy or None")
+        self.crossover_policy = CrossoverPolicy.default() if crossover_policy is None else crossover_policy
 
         if self.n_elits < 0 or self.n_elits >= self.population_size:
             raise ValueError("n_elits must be in range [0, population_size)")
@@ -55,6 +69,9 @@ class Tardigradas:
         self.chromo_size = schema.chromo_size
         self.gen_comments = list(schema.comments)
         self.gen_types = np.array([gen_type.value for gen_type in schema.gen_types], dtype=int)
+        self.bit_gene_mask = self.gen_types == GenType.bit.value
+        self.float_gene_mask = self.gen_types != GenType.bit.value
+        self.int_gene_indices = np.nonzero(self.gen_types == GenType.int.value)[0]
         self.chromo_bounds_min = np.array(schema.bounds[0], dtype=float)
         self.chromo_bounds_max = np.array(schema.bounds[1], dtype=float)
         self.chromo_gen_groups = np.array(schema.groups, dtype=int)
@@ -76,6 +93,188 @@ class Tardigradas:
         self.scores = np.zeros(0, dtype=float)
         self.full_scores = np.zeros((0, 1), dtype=float)
         self.n_killed_doubles = 0
+        self.population_origins: list[dict[str, object]] = []
+        self._last_crossover_origins: list[dict[str, object]] = []
+        self._last_mutation_origins: list[dict[str, object]] = []
+        self._adaptive_bit_uses: dict[CrossoverBitType, int] = {}
+        self._adaptive_bit_successes: dict[CrossoverBitType, int] = {}
+        self._adaptive_float_uses: dict[CrossoverFloatType, int] = {}
+        self._adaptive_float_successes: dict[CrossoverFloatType, int] = {}
+        self._reset_crossover_runtime_state()
+
+    def _default_population_origin(self, source: str) -> dict[str, object]:
+        return {
+            "source": source,
+            "bit_operator": None,
+            "float_operator": None,
+            "eligible_for_reward": False,
+        }
+
+    def _clone_population_origin(self, origin: dict[str, object]) -> dict[str, object]:
+        return {
+            "source": origin.get("source", "unknown"),
+            "bit_operator": origin.get("bit_operator"),
+            "float_operator": origin.get("float_operator"),
+            "eligible_for_reward": bool(origin.get("eligible_for_reward", False)),
+        }
+
+    def _reset_crossover_runtime_state(self) -> None:
+        self.population_origins = []
+        self._last_crossover_origins = []
+        self._last_mutation_origins = []
+        self._adaptive_bit_uses = {}
+        self._adaptive_bit_successes = {}
+        self._adaptive_float_uses = {}
+        self._adaptive_float_successes = {}
+
+        if not self.crossover_policy.is_adaptive:
+            return
+
+        for operator in self.crossover_policy.bit_candidates:
+            self._adaptive_bit_uses[operator] = 0
+            self._adaptive_bit_successes[operator] = 0
+        for operator in self.crossover_policy.float_candidates:
+            self._adaptive_float_uses[operator] = 0
+            self._adaptive_float_successes[operator] = 0
+
+    def _ensure_population_origins(self) -> None:
+        if len(self.population_origins) == len(self.population):
+            return
+        self.population_origins = [self._default_population_origin("unknown") for _ in self.population]
+
+    def _take_last_generated_origins(self, attr_name: str, expected_count: int, source: str) -> list[dict[str, object]]:
+        generated_origins = [self._clone_population_origin(origin) for origin in getattr(self, attr_name, [])]
+        setattr(self, attr_name, [])
+        if len(generated_origins) != expected_count:
+            return [self._default_population_origin(source) for _ in range(expected_count)]
+        return generated_origins
+
+    def _copy_origin_for_elitism(self, origin: dict[str, object]) -> dict[str, object]:
+        copied_origin = self._clone_population_origin(origin)
+        copied_origin["source"] = "elite"
+        copied_origin["eligible_for_reward"] = False
+        return copied_origin
+
+    def _adaptive_probabilities(
+        self,
+        candidates: Sequence[Union[CrossoverBitType, CrossoverFloatType]],
+        uses: dict[Union[CrossoverBitType, CrossoverFloatType], int],
+        successes: dict[Union[CrossoverBitType, CrossoverFloatType], int],
+    ) -> np.ndarray:
+        probabilities = np.array(
+            [
+                (successes[candidate] + 1.0) / (uses[candidate] + 2.0)
+                for candidate in candidates
+            ],
+            dtype=float,
+        )
+        probabilities /= probabilities.sum()
+
+        if self.crossover_policy.min_probability > 0.0:
+            floor = self.crossover_policy.min_probability
+            probabilities = probabilities * (1.0 - len(candidates) * floor) + floor
+
+        return probabilities
+
+    def _select_adaptive_operator(
+        self,
+        candidates: Sequence[Union[CrossoverBitType, CrossoverFloatType]],
+        uses: dict[Union[CrossoverBitType, CrossoverFloatType], int],
+        successes: dict[Union[CrossoverBitType, CrossoverFloatType], int],
+    ) -> Union[CrossoverBitType, CrossoverFloatType]:
+        probabilities = self._adaptive_probabilities(candidates, uses, successes)
+        selected_index = int(np.random.choice(len(candidates), p=probabilities))
+        operator = candidates[selected_index]
+        uses[operator] += 1
+        return operator
+
+    def _select_bit_crossover_operator(self) -> Optional[CrossoverBitType]:
+        if not self.bit_gene_mask.any():
+            return None
+        if self.crossover_policy.is_explicit:
+            return self.crossover_policy.bit
+        return self._select_adaptive_operator(
+            self.crossover_policy.bit_candidates,
+            self._adaptive_bit_uses,
+            self._adaptive_bit_successes,
+        )
+
+    def _select_float_crossover_operator(self) -> Optional[CrossoverFloatType]:
+        if not self.float_gene_mask.any():
+            return None
+        if self.crossover_policy.is_explicit:
+            return self.crossover_policy.float
+        return self._select_adaptive_operator(
+            self.crossover_policy.float_candidates,
+            self._adaptive_float_uses,
+            self._adaptive_float_successes,
+        )
+
+    def _apply_bit_crossover(
+        self,
+        kid: np.ndarray,
+        parent1: np.ndarray,
+        parent2: np.ndarray,
+        operator: CrossoverBitType,
+    ) -> np.ndarray:
+        if operator == CrossoverBitType.uniform:
+            return crossover_uniform(kid, parent1, parent2, self.chromo_gen_groups, self.bit_gene_mask)
+        if operator == CrossoverBitType.one_point:
+            return crossover_one_point(kid, parent1, parent2, self.chromo_gen_groups, self.bit_gene_mask)
+        if operator == CrossoverBitType.two_point:
+            return crossover_two_point(kid, parent1, parent2, self.chromo_gen_groups, self.bit_gene_mask)
+        raise TardigradasException(f"unsupported bit crossover operator: {operator}")
+
+    def _apply_float_crossover(
+        self,
+        kid: np.ndarray,
+        parent1: np.ndarray,
+        parent2: np.ndarray,
+        operator: CrossoverFloatType,
+    ) -> np.ndarray:
+        if operator == CrossoverFloatType.uniform:
+            return crossover_uniform(kid, parent1, parent2, self.chromo_gen_groups, self.float_gene_mask)
+        if operator == CrossoverFloatType.arithmetic:
+            return crossover_arithmetic(
+                kid,
+                parent1,
+                parent2,
+                self.float_gene_mask,
+                self.chromo_bounds_min,
+                self.chromo_bounds_max,
+            )
+        if operator == CrossoverFloatType.BLX:
+            return crossover_blx(
+                kid,
+                parent1,
+                parent2,
+                self.float_gene_mask,
+                self.chromo_bounds_min,
+                self.chromo_bounds_max,
+            )
+        raise TardigradasException(f"unsupported float crossover operator: {operator}")
+
+    def _update_adaptive_crossover_statistics(self, elite_indices: np.ndarray) -> None:
+        if not self.crossover_policy.is_adaptive:
+            return
+
+        self._ensure_population_origins()
+        elite_index_set = {int(index) for index in elite_indices}
+
+        for index, origin in enumerate(self.population_origins):
+            if not bool(origin.get("eligible_for_reward", False)):
+                continue
+
+            if index in elite_index_set and origin.get("source") == "crossover":
+                bit_operator = origin.get("bit_operator")
+                if bit_operator in self._adaptive_bit_successes:
+                    self._adaptive_bit_successes[bit_operator] += 1
+
+                float_operator = origin.get("float_operator")
+                if float_operator in self._adaptive_float_successes:
+                    self._adaptive_float_successes[float_operator] += 1
+
+            origin["eligible_for_reward"] = False
 
     def show_progress(self, *_: object) -> bool:
         time = dt.datetime.now()
@@ -113,7 +312,9 @@ class Tardigradas:
         raise TardigradasException(f"can't create a new random chromosome in {n_attempts} attempts")
 
     def population_init(self) -> None:
+        self._reset_crossover_runtime_state()
         self.population = [self.new_valid_individual(use_defaults=True) for _ in range(self.population_size)]
+        self.population_origins = [self._default_population_origin("initial") for _ in range(self.population_size)]
         self.iterations = 0
         self.scores_history = []
         self.custom_scores_history = []
@@ -129,6 +330,7 @@ class Tardigradas:
 
     def crossover(self, parent_indices: np.ndarray) -> list[Individual]:
         kids: list[Individual] = []
+        origins: list[dict[str, object]] = []
         n_kids = len(parent_indices) // 2
 
         for i in range(n_kids):
@@ -136,22 +338,39 @@ class Tardigradas:
             parent2 = self.population[parent_indices[i + n_kids]]
 
             if self.problem.is_equal(parent1.chromo, parent2.chromo):
-                kids.extend(self.mutation(np.array([parent_indices[i]], dtype=int)))
+                fallback_kids = self.mutation(np.array([parent_indices[i]], dtype=int))
+                kids.extend(fallback_kids)
+                origins.extend(self._take_last_generated_origins("_last_mutation_origins", len(fallback_kids), "mutation"))
                 continue
 
             kid_chromo = np.zeros(self.chromo_size, dtype=float)
-            gene_mask = np.ones(self.chromo_size, dtype=bool)
-            crossover_uniform(kid_chromo, parent1.chromo, parent2.chromo, self.chromo_gen_groups, gene_mask)
+            bit_operator = self._select_bit_crossover_operator()
+            float_operator = self._select_float_crossover_operator()
 
-            int_gen_indices = np.nonzero(self.gen_types == GenType.int.value)[0]
-            for i_int_gen in int_gen_indices:
+            if bit_operator is not None:
+                self._apply_bit_crossover(kid_chromo, parent1.chromo, parent2.chromo, bit_operator)
+            if float_operator is not None:
+                self._apply_float_crossover(kid_chromo, parent1.chromo, parent2.chromo, float_operator)
+
+            for i_int_gen in self.int_gene_indices:
                 kid_chromo[i_int_gen] = round(kid_chromo[i_int_gen])
 
             kids.append(self.create_individual(chromo=kid_chromo))
 
+            origins.append(
+                {
+                    "source": "crossover",
+                    "bit_operator": bit_operator,
+                    "float_operator": float_operator,
+                    "eligible_for_reward": self.crossover_policy.is_adaptive,
+                }
+            )
+
+        self._last_crossover_origins = origins
         return kids
 
     def mutation(self, parent_indices: np.ndarray) -> list[Individual]:
+        self._last_mutation_origins = []
         if len(parent_indices) == 0:
             return []
         if len(self.mutable_positions) == 0:
@@ -161,6 +380,7 @@ class Tardigradas:
         n_mutation = int(np.clip(n_mutation, 1, max(1, len(self.mutable_positions))))
 
         kids: list[Individual] = []
+        origins: list[dict[str, object]] = []
         for i_parent in parent_indices:
             n_attempts = 200
             for _ in range(n_attempts):
@@ -175,10 +395,12 @@ class Tardigradas:
                 kid = self.create_individual(chromo=kid_chromo)
                 if kid.chromo_valid() and not self.problem.is_equal(kid.chromo, self.population[i_parent].chromo):
                     kids.append(kid)
+                    origins.append(self._default_population_origin("mutation"))
                     break
             else:
                 raise TardigradasException(f"can't create a mutated chromosome in {n_attempts} attempts")
 
+        self._last_mutation_origins = origins
         return kids
 
     def estimate_population(self) -> None:
@@ -193,6 +415,7 @@ class Tardigradas:
 
     def kill_doubles(self) -> None:
         self.n_killed_doubles = 0
+        self._ensure_population_origins()
         seen: set[bytes] = set()
         n_attempts = 200
 
@@ -207,6 +430,7 @@ class Tardigradas:
                 signature = replacement.chromo.tobytes()
                 if signature not in seen:
                     self.population[index] = replacement
+                    self.population_origins[index] = self._default_population_origin("fresh")
                     seen.add(signature)
                     self.n_killed_doubles += 1
                     break
@@ -229,6 +453,7 @@ class Tardigradas:
         if not self.population:
             raise TardigradasException("population is not initialized, call population_init() first")
 
+        self._ensure_population_origins()
         self.estimate_population()
 
         n_generation_slots = self.population_size - self.n_elits
@@ -243,7 +468,9 @@ class Tardigradas:
 
         ix_best = np.argsort(-self.scores)
         elite_indices = ix_best[: self.n_elits]
+        self._update_adaptive_crossover_statistics(elite_indices)
         kids_elit = [self.population[index] for index in elite_indices]
+        elite_origins = [self._copy_origin_for_elitism(self.population_origins[index]) for index in elite_indices]
 
         self.step_score = float(self.scores[ix_best[0]])
         self.step_custom_score = self.full_scores[ix_best[0]]
@@ -258,14 +485,19 @@ class Tardigradas:
         self.custom_scores_history.append(self.step_custom_score)
 
         kids_crossover = self.crossover(parent_indices[: 2 * n_crossover]) if n_crossover else []
+        kids_crossover_origins = self._take_last_generated_origins("_last_crossover_origins", len(kids_crossover), "crossover")
         kids_mutation = self.mutation(parent_indices[2 * n_crossover :]) if n_mutation else []
+        kids_mutation_origins = self._take_last_generated_origins("_last_mutation_origins", len(kids_mutation), "mutation")
         kids_new = [self.new_valid_individual(use_defaults=True) for _ in range(n_fresh_blood)]
+        kids_new_origins = [self._default_population_origin("fresh") for _ in range(n_fresh_blood)]
 
         self.population = kids_elit + kids_crossover + kids_mutation + kids_new
+        self.population_origins = elite_origins + kids_crossover_origins + kids_mutation_origins + kids_new_origins
 
         for i_individual, individual in enumerate(self.population):
             if not individual.chromo_valid():
                 self.population[i_individual] = self.new_valid_individual()
+                self.population_origins[i_individual] = self._default_population_origin("fresh")
 
         self.kill_doubles()
         self.iterations += 1

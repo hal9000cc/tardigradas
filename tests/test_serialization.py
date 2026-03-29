@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from tardigradas import CrossoverBitType, CrossoverFloatType, CrossoverPolicy
 from tests.helpers import create_engine
 
 
@@ -49,3 +50,30 @@ def test_save_to_file_and_restore_from_file_round_trip(engine, tmp_path) -> None
     assert restored.iterations == engine.iterations
     assert restored.best_score == engine.best_score
     assert np.array_equal(restored.population_chromosomes, engine.population_chromosomes)
+
+
+def test_restore_from_dict_preserves_crossover_policy_and_adaptive_state() -> None:
+    engine = create_engine(
+        crossover_policy=CrossoverPolicy.adaptive(
+            bit_candidates=[CrossoverBitType.uniform, CrossoverBitType.one_point],
+            float_candidates=[CrossoverFloatType.uniform, CrossoverFloatType.arithmetic],
+            reward="elite_survival",
+        )
+    )
+    engine.population_init()
+    engine._adaptive_bit_uses[CrossoverBitType.one_point] = 3
+    engine._adaptive_bit_successes[CrossoverBitType.one_point] = 2
+    engine.population_origins[0] = {
+        "source": "crossover",
+        "bit_operator": CrossoverBitType.one_point,
+        "float_operator": CrossoverFloatType.arithmetic,
+        "eligible_for_reward": True,
+    }
+
+    restored = create_engine()
+    restored.restore_from_dict(engine.state_dict())
+
+    assert restored.crossover_policy == engine.crossover_policy
+    assert restored._adaptive_bit_uses == engine._adaptive_bit_uses
+    assert restored._adaptive_bit_successes == engine._adaptive_bit_successes
+    assert restored.population_origins == engine.population_origins

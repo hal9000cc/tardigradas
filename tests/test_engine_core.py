@@ -4,7 +4,7 @@ import tardigradas.engine as engine_module
 import numpy as np
 import pytest
 
-from tardigradas import Tardigradas, TardigradasException
+from tardigradas import CrossoverBitType, CrossoverFloatType, CrossoverPolicy, Tardigradas, TardigradasException
 from tests.helpers import (
     DummyProblem,
     FixedGenesProblem,
@@ -27,6 +27,7 @@ from tests.helpers import (
         {"crossover_fraction": 0.8, "fresh_blood_fraction": 0.3},
         {"n_elits": -1},
         {"n_elits": 6},
+        {"crossover_policy": object()},
     ],
 )
 def test_engine_init_validates_parameters(kwargs: dict[str, float]) -> None:
@@ -70,6 +71,16 @@ def test_population_init_creates_population_and_resets_runtime_state(engine) -> 
     assert engine.step_custom_score is None
     assert engine.scores.shape == (0,)
     assert engine.full_scores.shape == (0, 1)
+    assert len(engine.population_origins) == engine.population_size
+
+
+def test_engine_uses_uniform_policy_by_default() -> None:
+    engine = create_engine()
+
+    assert engine.crossover_policy == CrossoverPolicy.explicit(
+        bit=CrossoverBitType.uniform,
+        float=CrossoverFloatType.uniform,
+    )
 
 
 def test_new_valid_individual_returns_valid_individual(engine) -> None:
@@ -150,6 +161,109 @@ def test_crossover_falls_back_to_mutation_for_equal_parents(engine, monkeypatch)
 
     assert kids == [mutation_child]
     np.testing.assert_array_equal(captured["parent_indices"], np.array([0], dtype=int))
+
+
+def test_crossover_uses_explicit_policy_for_bit_and_float_branches(monkeypatch) -> None:
+    engine = create_engine(
+        population_size=2,
+        crossover_policy=CrossoverPolicy.explicit(
+            bit=CrossoverBitType.two_point,
+            float=CrossoverFloatType.BLX,
+        ),
+    )
+    engine.population = build_population(
+        engine,
+        [
+            [1.0, 1.0, -0.2],
+            [0.0, 4.0, 0.8],
+        ],
+    )
+
+    captured: dict[str, np.ndarray] = {}
+
+    def fake_two_point(kid, parent1, parent2, gene_groups, gene_mask):
+        captured["bit_mask"] = np.array(gene_mask, copy=True)
+        kid[gene_mask] = parent2[gene_mask]
+        return kid
+
+    def fake_blx(kid, parent1, parent2, gene_mask, bounds_min, bounds_max, alpha=0.5):
+        captured["float_mask"] = np.array(gene_mask, copy=True)
+        kid[gene_mask] = np.array([1.7, 0.25], dtype=float)
+        return kid
+
+    monkeypatch.setattr(engine_module, "crossover_two_point", fake_two_point)
+    monkeypatch.setattr(engine_module, "crossover_blx", fake_blx)
+
+    kid = engine.crossover(np.array([0, 1], dtype=int))[0]
+
+    np.testing.assert_array_equal(captured["bit_mask"], np.array([True, False, False]))
+    np.testing.assert_array_equal(captured["float_mask"], np.array([False, True, True]))
+    assert kid.chromo.tolist() == [0.0, 2.0, 0.25]
+
+
+def test_adaptive_policy_rewards_only_elite_crossover_children() -> None:
+    engine = create_engine(
+        population_size=2,
+        crossover_policy=CrossoverPolicy.adaptive(
+            bit_candidates=[CrossoverBitType.uniform, CrossoverBitType.one_point],
+            float_candidates=[CrossoverFloatType.uniform, CrossoverFloatType.arithmetic],
+            reward="elite_survival",
+        ),
+    )
+    engine.population = build_population(
+        engine,
+        [
+            [1.0, 1.0, 0.4],
+            [0.0, 0.0, -0.4],
+        ],
+    )
+    engine.population_origins = [
+        {
+            "source": "crossover",
+            "bit_operator": CrossoverBitType.one_point,
+            "float_operator": CrossoverFloatType.arithmetic,
+            "eligible_for_reward": True,
+        },
+        {
+            "source": "mutation",
+            "bit_operator": None,
+            "float_operator": None,
+            "eligible_for_reward": False,
+        },
+    ]
+
+    engine._update_adaptive_crossover_statistics(np.array([0], dtype=int))
+
+    assert engine._adaptive_bit_successes[CrossoverBitType.one_point] == 1
+    assert engine._adaptive_float_successes[CrossoverFloatType.arithmetic] == 1
+    assert engine.population_origins[0]["eligible_for_reward"] is False
+
+
+def test_adaptive_policy_biases_selection_towards_more_successful_operator(monkeypatch) -> None:
+    engine = create_engine(
+        crossover_policy=CrossoverPolicy.adaptive(
+            bit_candidates=[CrossoverBitType.uniform, CrossoverBitType.one_point],
+            float_candidates=[CrossoverFloatType.uniform],
+            reward="elite_survival",
+        ),
+    )
+    engine._adaptive_bit_uses[CrossoverBitType.uniform] = 6
+    engine._adaptive_bit_successes[CrossoverBitType.uniform] = 0
+    engine._adaptive_bit_uses[CrossoverBitType.one_point] = 2
+    engine._adaptive_bit_successes[CrossoverBitType.one_point] = 2
+
+    captured: dict[str, np.ndarray] = {}
+
+    def fake_choice(options, p):
+        captured["p"] = np.array(p, copy=True)
+        return 1
+
+    monkeypatch.setattr(np.random, "choice", fake_choice)
+
+    operator = engine._select_bit_crossover_operator()
+
+    assert operator == CrossoverBitType.one_point
+    assert captured["p"][1] > captured["p"][0]
 
 
 def test_step_updates_best_iteration_only_on_improvement(monkeypatch) -> None:
