@@ -1,0 +1,89 @@
+from __future__ import annotations
+
+import numpy as np
+
+from tardigradas import ChromosomeSchema, GenType, Individual, Problem, Tardigradas
+
+
+def build_dummy_schema(
+    *,
+    defaults: list[float] | None = None,
+    defaults_probability: list[float] | None = None,
+    comments: list[str] | None = None,
+    groups: list[int] | None = None,
+) -> ChromosomeSchema:
+    return ChromosomeSchema(
+        gen_types=[GenType.bit, GenType.int, GenType.float],
+        bounds=([0, 0, -1.0], [1, 5, 1.0]),
+        comments=["bit", "int", "float"] if comments is None else comments,
+        groups=[0, 0, 1] if groups is None else groups,
+        defaults=[1.0, 2.0, 0.25] if defaults is None else defaults,
+        defaults_probability=[0.0, 0.0, 0.0] if defaults_probability is None else defaults_probability,
+    )
+
+
+class DummyProblem(Problem):
+    @staticmethod
+    def init_environment(tardigradas: Tardigradas) -> None:
+        return None
+
+    @staticmethod
+    def gen_info(tardigradas: Tardigradas) -> ChromosomeSchema:
+        return build_dummy_schema()
+
+    @staticmethod
+    def fitness(individual: Individual) -> float:
+        return float(individual[0] + individual[1] + individual[2])
+
+
+class DefaultsProblem(DummyProblem):
+    @staticmethod
+    def gen_info(tardigradas: Tardigradas) -> ChromosomeSchema:
+        return build_dummy_schema(defaults_probability=[1.0, 1.0, 1.0])
+
+
+class RejectAllProblem(DummyProblem):
+    @staticmethod
+    def chromo_valid(individual: Individual) -> bool:
+        return False
+
+
+class VectorFitnessProblem(DummyProblem):
+    @staticmethod
+    def fitness(individual: Individual) -> list[float]:
+        return [float(individual[0] + individual[1]), float(individual[2])]
+
+
+class EmptyFitnessProblem(DummyProblem):
+    @staticmethod
+    def fitness(individual: Individual) -> list[float]:
+        return []
+
+
+class TaggedIndividual(Individual):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.tag = "custom"
+
+
+class TaggedProblem(DummyProblem):
+    individual_class = TaggedIndividual
+
+
+def create_engine(
+    *,
+    problem: type[Problem] = DummyProblem,
+    population_size: int = 6,
+    crossover_fraction: float = 0.5,
+    fresh_blood_fraction: float = 0.0,
+    gen_mutation_fraction: float = 0.25,
+    n_elits: int = 1,
+) -> Tardigradas:
+    return Tardigradas(
+        problem=problem,
+        population_size=population_size,
+        crossover_fraction=crossover_fraction,
+        fresh_blood_fraction=fresh_blood_fraction,
+        gen_mutation_fraction=gen_mutation_fraction,
+        n_elits=n_elits,
+    )
