@@ -34,12 +34,40 @@ class Problem(ABC):
         raise NotImplementedError
 
     @staticmethod
+    def random_chromo_size(tardigradas: Tardigradas) -> int:
+        return int(tardigradas.chromo_size)
+
+    @staticmethod
+    def custom_crossover(
+        tardigradas: Tardigradas,
+        parent1_chromo: np.ndarray,
+        parent2_chromo: np.ndarray,
+    ) -> np.ndarray:
+        raise NotImplementedError
+
+    @staticmethod
+    def custom_crossover_mixed_length(
+        tardigradas: Tardigradas,
+        parent1_chromo: np.ndarray,
+        parent2_chromo: np.ndarray,
+    ) -> np.ndarray:
+        raise NotImplementedError
+
+    @staticmethod
     def validate_score(individual: Individual) -> Union[Sequence[float], float, None]:
         return None
 
     @classmethod
     def has_validate_score(cls) -> bool:
         return cls.validate_score is not Problem.validate_score
+
+    @classmethod
+    def has_custom_crossover(cls) -> bool:
+        return cls.custom_crossover is not Problem.custom_crossover
+
+    @classmethod
+    def has_custom_crossover_mixed_length(cls) -> bool:
+        return cls.custom_crossover_mixed_length is not Problem.custom_crossover_mixed_length
 
     @staticmethod
     def chromo_valid(individual: Individual) -> bool:

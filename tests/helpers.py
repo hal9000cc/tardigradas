@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import numpy as np
+
 from benchmarks.problems import (
     AckleyProblem,
     OneMaxProblem,
@@ -119,6 +121,55 @@ class TaggedIndividual(Individual):
 
 class TaggedProblem(DummyProblem):
     individual_class = TaggedIndividual
+
+
+class VariableLengthProblem(DummyProblem):
+    @staticmethod
+    def random_chromo_size(tardigradas: Tardigradas) -> int:
+        return 2
+
+    @staticmethod
+    def fitness(individual: Individual) -> float:
+        return float(np.sum(individual.chromo))
+
+
+class FullCustomCrossoverProblem(DummyProblem):
+    @staticmethod
+    def custom_crossover(
+        tardigradas: Tardigradas,
+        parent1_chromo,
+        parent2_chromo,
+    ):
+        return [parent2_chromo[0], 1.7, 0.25]
+
+
+class MixedLengthCustomCrossoverProblem(DummyProblem):
+    @staticmethod
+    def custom_crossover_mixed_length(
+        tardigradas: Tardigradas,
+        parent1_chromo,
+        parent2_chromo,
+    ):
+        longer = parent1_chromo if len(parent1_chromo) >= len(parent2_chromo) else parent2_chromo
+        return longer
+
+
+class InvalidDualCustomCrossoverProblem(DummyProblem):
+    @staticmethod
+    def custom_crossover(
+        tardigradas: Tardigradas,
+        parent1_chromo,
+        parent2_chromo,
+    ):
+        return parent1_chromo
+
+    @staticmethod
+    def custom_crossover_mixed_length(
+        tardigradas: Tardigradas,
+        parent1_chromo,
+        parent2_chromo,
+    ):
+        return parent2_chromo
 
 
 def create_engine(

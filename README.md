@@ -13,14 +13,21 @@
 ## Что умеет библиотека
 
 - поддерживает три типа генов: `bit`, `int`, `float`;
+- поддерживает хромосомы переменной длины как префикс `ChromosomeSchema`;
 - инициализирует популяцию случайными особями;
 - выполняет ранговый отбор родителей;
 - поддерживает кроссовер и мутацию;
+- поддерживает кастомные hooks кроссовера для полной замены стандартной логики или только для родителей разной длины;
 - позволяет явно выбирать разные операторы кроссовера для `bit` и `float`/`int` генов;
 - поддерживает adaptive-выбор операторов кроссовера по статистике успеха;
 - добавляет «свежую кровь» в популяцию;
 - удаляет дубликаты;
 - сохраняет и восстанавливает состояние поиска через `pickle`.
+
+Ограничения:
+
+- variable-length режим использует `ChromosomeSchema` как описание **максимальной** длины, а более короткие хромосомы трактуются как префикс;
+- adaptive crossover работает только для родителей одинаковой длины;
 
 ## Установка
 
@@ -62,6 +69,12 @@ pip install -e .[plot]
 - `validate_score(individual)` — опциональная дополнительная score-метрика для лидера эпохи;
 - `chromo_valid(individual)` — опциональная дополнительная валидация.
 
+Опционально для расширенных сценариев:
+
+- `random_chromo_size(tardigradas) -> int` — длина новой случайной хромосомы;
+- `custom_crossover(tardigradas, parent1_chromo, parent2_chromo)` — полностью заменить стандартный кроссовер;
+- `custom_crossover_mixed_length(tardigradas, parent1_chromo, parent2_chromo)` — обработка только пары родителей разной длины.
+
 ## Формат `ChromosomeSchema`
 
 `ChromosomeSchema` описывает:
@@ -72,6 +85,8 @@ pip install -e .[plot]
 - `groups` — группы генов для совместного переключения;
 - `defaults` — значения по умолчанию;
 - `defaults_probability` — вероятности применения значений по умолчанию.
+
+По умолчанию схема задаёт хромосому фиксированной длины. Для режима variable-length та же схема интерпретируется как описание **максимальной** длины, а более короткие хромосомы считаются её **префиксом**.
 
 Пример:
 
@@ -195,6 +210,8 @@ CrossoverPolicy.explicit(
 
 `int`-гены обрабатываются через ту же float-ветку кроссоверов с последующим округлением результата.
 
+Если родители имеют одинаковую длину, стандартный кроссовер работает как раньше. Если длины различаются, стандартные встроенные операторы не применяются: либо вызывается `Problem.custom_crossover_mixed_length()`, либо используется fallback на mutation.
+
 ### Явный выбор операторов
 
 ```python
@@ -239,6 +256,58 @@ policy = CrossoverPolicy.adaptive(
 ```
 
 В текущей версии adaptive-режим поддерживает reward-стратегию `"elite_survival"`: оператор получает успех, если ребёнок, созданный им, попадает в элитную часть популяции на следующем шаге.
+
+Ограничения совместимости:
+
+- `custom_crossover()` несовместим с adaptive policy;
+- нельзя одновременно определить `custom_crossover()` и `custom_crossover_mixed_length()`;
+- `custom_crossover_mixed_length()` совместим с adaptive policy, потому что adaptive-механизм продолжает работать для родителей одинаковой длины.
+
+### Variable-length chromosomes
+
+Если нужно создавать особей разной длины, переопределите `Problem.random_chromo_size()`:
+
+```python
+class VariableLengthProblem(Problem):
+    @staticmethod
+    def init_environment(tardigradas):
+        pass
+
+    @staticmethod
+    def gen_info(tardigradas):
+        return ChromosomeSchema(
+            gen_types=[GenType.bit, GenType.int, GenType.float],
+            bounds=([0, 0, -1.0], [1, 5, 1.0]),
+        )
+
+    @staticmethod
+    def random_chromo_size(tardigradas):
+        return 2
+```
+
+В этом примере новая случайная хромосома будет использовать только первые два гена схемы.
+
+### Custom crossover hooks
+
+Полная замена кроссовера:
+
+```python
+class CustomProblem(Problem):
+    @staticmethod
+    def custom_crossover(tardigradas, parent1_chromo, parent2_chromo):
+        return parent1_chromo
+```
+
+Специализированный hook только для родителей разной длины:
+
+```python
+class MixedLengthProblem(Problem):
+    @staticmethod
+    def custom_crossover_mixed_length(tardigradas, parent1_chromo, parent2_chromo):
+        return parent1_chromo if len(parent1_chromo) >= len(parent2_chromo) else parent2_chromo
+```
+
+Во всех вариантах после кроссовера движок сам округляет `int`-гены по схеме.
 
 ## Основные методы
 

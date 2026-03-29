@@ -8,9 +8,13 @@ from tardigradas import CrossoverBitType, CrossoverFloatType, CrossoverPolicy, T
 from tests.helpers import (
     DummyProblem,
     FixedGenesProblem,
+    FullCustomCrossoverProblem,
+    InvalidDualCustomCrossoverProblem,
+    MixedLengthCustomCrossoverProblem,
     NonNegativeFloatProblem,
     RejectAllProblem,
     ValidateScoreProblem,
+    VariableLengthProblem,
     VectorFitnessProblem,
     build_population,
     create_engine,
@@ -120,7 +124,7 @@ def test_kill_doubles_replaces_duplicates_and_counts_them(engine, monkeypatch) -
 
 
 def test_population_chromosomes_returns_expected_shape(engine) -> None:
-    assert engine.population_chromosomes.shape == (0, engine.chromo_size)
+    assert engine.population_chromosomes == []
 
     engine.population = [
         engine.create_individual(chromo=[1.0, 2.0, 0.0]),
@@ -129,7 +133,26 @@ def test_population_chromosomes_returns_expected_shape(engine) -> None:
 
     chromosomes = engine.population_chromosomes
 
-    assert chromosomes.shape == (2, engine.chromo_size)
+    assert isinstance(chromosomes, list)
+    assert len(chromosomes) == 2
+    np.testing.assert_array_equal(chromosomes[0], np.array([1.0, 2.0, 0.0], dtype=float))
+    np.testing.assert_array_equal(chromosomes[1], np.array([0.0, 3.0, 0.5], dtype=float))
+
+
+def test_engine_init_rejects_both_custom_crossover_hooks() -> None:
+    with pytest.raises(ValueError, match="both custom_crossover\(\) and custom_crossover_mixed_length\(\)"):
+        create_engine(problem=InvalidDualCustomCrossoverProblem)
+
+
+def test_engine_init_rejects_adaptive_policy_with_full_custom_crossover() -> None:
+    with pytest.raises(ValueError, match="custom_crossover\(\) is incompatible with adaptive crossover policy"):
+        create_engine(
+            problem=FullCustomCrossoverProblem,
+            crossover_policy=CrossoverPolicy.adaptive(
+                bit_candidates=[CrossoverBitType.uniform],
+                float_candidates=[CrossoverFloatType.uniform],
+            ),
+        )
 
 
 def test_step_raises_when_population_is_not_initialized(engine) -> None:
@@ -139,6 +162,7 @@ def test_step_raises_when_population_is_not_initialized(engine) -> None:
 
 def test_mutation_raises_when_all_genes_are_fixed() -> None:
     engine = create_engine(problem=FixedGenesProblem, population_size=2)
+    engine.population = [engine.create_individual(chromo=[1.0, 2.0, 0.5])]
 
     with pytest.raises(TardigradasException, match="all genes are fixed"):
         engine.mutation(np.array([0], dtype=int))
@@ -204,6 +228,54 @@ def test_crossover_uses_explicit_policy_for_bit_and_float_branches(monkeypatch) 
     np.testing.assert_array_equal(captured["bit_mask"], np.array([True, False, False]))
     np.testing.assert_array_equal(captured["float_mask"], np.array([False, True, True]))
     assert kid.chromo.tolist() == [0.0, 2.0, 0.25]
+
+
+def test_crossover_uses_full_custom_hook_and_rounds_int_gene() -> None:
+    engine = create_engine(problem=FullCustomCrossoverProblem, population_size=2)
+    engine.population = build_population(
+        engine,
+        [
+            [1.0, 1.0, -0.2],
+            [0.0, 4.0, 0.8],
+        ],
+    )
+
+    kid = engine.crossover(np.array([0, 1], dtype=int))[0]
+
+    assert kid.chromo.tolist() == [0.0, 2.0, 0.25]
+
+
+def test_crossover_uses_custom_mixed_length_hook_for_different_lengths() -> None:
+    engine = create_engine(problem=MixedLengthCustomCrossoverProblem, population_size=2)
+    engine.population = [
+        engine.create_individual(chromo=[1.0, 2.0]),
+        engine.create_individual(chromo=[0.0, 4.0, 0.8]),
+    ]
+
+    kid = engine.crossover(np.array([0, 1], dtype=int))[0]
+
+    assert kid.chromo.tolist() == [0.0, 4.0, 0.8]
+
+
+def test_crossover_uses_standard_logic_for_equal_lengths_even_with_mixed_length_hook(monkeypatch) -> None:
+    engine = create_engine(problem=MixedLengthCustomCrossoverProblem, population_size=2)
+    engine.population = build_population(
+        engine,
+        [
+            [1.0, 1.0, -0.2],
+            [0.0, 4.0, 0.8],
+        ],
+    )
+    expected_kid = engine.create_individual(chromo=[1.0, 2.0, 0.5])
+
+    def fake_standard(parent1_chromo: np.ndarray, parent2_chromo: np.ndarray):
+        return expected_kid, engine._default_population_origin("crossover")
+
+    monkeypatch.setattr(engine, "_standard_crossover_child", fake_standard)
+
+    kid = engine.crossover(np.array([0, 1], dtype=int))[0]
+
+    assert kid is expected_kid
 
 
 def test_adaptive_policy_rewards_only_elite_crossover_children() -> None:
@@ -275,6 +347,15 @@ def test_adaptive_policy_biases_selection_towards_more_successful_operator(monke
 
     assert operator == CrossoverBitType.one_point
     assert captured["p"][1] > captured["p"][0]
+
+
+def test_mutation_preserves_variable_length_parent() -> None:
+    engine = create_engine(problem=VariableLengthProblem, population_size=1, n_elits=0)
+    engine.population = [engine.create_individual(chromo=[1.0, 2.0])]
+
+    kid = engine.mutation(np.array([0], dtype=int))[0]
+
+    assert len(kid.chromo) == 2
 
 
 def test_step_updates_best_iteration_only_on_improvement(monkeypatch) -> None:

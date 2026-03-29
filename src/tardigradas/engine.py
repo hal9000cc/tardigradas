@@ -64,6 +64,11 @@ class Tardigradas:
         if self.n_elits < 0 or self.n_elits >= self.population_size:
             raise ValueError("n_elits must be in range [0, population_size)")
 
+        if problem.has_custom_crossover() and problem.has_custom_crossover_mixed_length():
+            raise ValueError("problem cannot define both custom_crossover() and custom_crossover_mixed_length()")
+        if problem.has_custom_crossover() and self.crossover_policy.is_adaptive:
+            raise ValueError("custom_crossover() is incompatible with adaptive crossover policy")
+
         problem.init_environment(self)
         schema = problem.gen_info(self)
         if not isinstance(schema, ChromosomeSchema):
@@ -297,8 +302,9 @@ class Tardigradas:
         epoch_uses[operator] += 1
         return operator
 
-    def _select_bit_crossover_operator(self) -> Optional[CrossoverBitType]:
-        if not self.bit_gene_mask.any():
+    def _select_bit_crossover_operator(self, gene_mask: Optional[np.ndarray] = None) -> Optional[CrossoverBitType]:
+        active_mask = self.bit_gene_mask if gene_mask is None else np.asarray(gene_mask, dtype=bool)
+        if not active_mask.any():
             return None
         if self.crossover_policy.is_explicit:
             return self.crossover_policy.bit
@@ -308,8 +314,9 @@ class Tardigradas:
             self._adaptive_bit_epoch_uses,
         )
 
-    def _select_float_crossover_operator(self) -> Optional[CrossoverFloatType]:
-        if not self.float_gene_mask.any():
+    def _select_float_crossover_operator(self, gene_mask: Optional[np.ndarray] = None) -> Optional[CrossoverFloatType]:
+        active_mask = self.float_gene_mask if gene_mask is None else np.asarray(gene_mask, dtype=bool)
+        if not active_mask.any():
             return None
         if self.crossover_policy.is_explicit:
             return self.crossover_policy.float
@@ -329,13 +336,15 @@ class Tardigradas:
         parent1: np.ndarray,
         parent2: np.ndarray,
         operator: CrossoverBitType,
+        gene_groups: np.ndarray,
+        gene_mask: np.ndarray,
     ) -> np.ndarray:
         if operator == CrossoverBitType.uniform:
-            return crossover_uniform(kid, parent1, parent2, self.chromo_gen_groups, self.bit_gene_mask)
+            return crossover_uniform(kid, parent1, parent2, gene_groups, gene_mask)
         if operator == CrossoverBitType.one_point:
-            return crossover_one_point(kid, parent1, parent2, self.chromo_gen_groups, self.bit_gene_mask)
+            return crossover_one_point(kid, parent1, parent2, gene_groups, gene_mask)
         if operator == CrossoverBitType.two_point:
-            return crossover_two_point(kid, parent1, parent2, self.chromo_gen_groups, self.bit_gene_mask)
+            return crossover_two_point(kid, parent1, parent2, gene_groups, gene_mask)
         raise TardigradasException(f"unsupported bit crossover operator: {operator}")
 
     def _apply_float_crossover(
@@ -344,28 +353,93 @@ class Tardigradas:
         parent1: np.ndarray,
         parent2: np.ndarray,
         operator: CrossoverFloatType,
+        gene_groups: np.ndarray,
+        gene_mask: np.ndarray,
+        bounds_min: np.ndarray,
+        bounds_max: np.ndarray,
     ) -> np.ndarray:
         if operator == CrossoverFloatType.uniform:
-            return crossover_uniform(kid, parent1, parent2, self.chromo_gen_groups, self.float_gene_mask)
+            return crossover_uniform(kid, parent1, parent2, gene_groups, gene_mask)
         if operator == CrossoverFloatType.arithmetic:
             return crossover_arithmetic(
                 kid,
                 parent1,
                 parent2,
-                self.float_gene_mask,
-                self.chromo_bounds_min,
-                self.chromo_bounds_max,
+                gene_mask,
+                bounds_min,
+                bounds_max,
             )
         if operator == CrossoverFloatType.BLX:
             return crossover_blx(
                 kid,
                 parent1,
                 parent2,
-                self.float_gene_mask,
-                self.chromo_bounds_min,
-                self.chromo_bounds_max,
+                gene_mask,
+                bounds_min,
+                bounds_max,
             )
         raise TardigradasException(f"unsupported float crossover operator: {operator}")
+
+    def _standard_crossover_child(
+        self,
+        parent1_chromo: np.ndarray,
+        parent2_chromo: np.ndarray,
+    ) -> tuple[Individual, dict[str, object]]:
+        if len(parent1_chromo) != len(parent2_chromo):
+            raise TardigradasException("standard crossover requires parents with equal chromosome length")
+
+        schema_prefix = self._schema_prefix(len(parent1_chromo))
+        kid_chromo = np.zeros(len(parent1_chromo), dtype=float)
+        bit_operator = self._select_bit_crossover_operator(schema_prefix["bit_gene_mask"])
+        float_operator = self._select_float_crossover_operator(schema_prefix["float_gene_mask"])
+
+        if bit_operator is not None:
+            self._apply_bit_crossover(
+                kid_chromo,
+                parent1_chromo,
+                parent2_chromo,
+                bit_operator,
+                schema_prefix["gene_groups"],
+                schema_prefix["bit_gene_mask"],
+            )
+        if float_operator is not None:
+            self._apply_float_crossover(
+                kid_chromo,
+                parent1_chromo,
+                parent2_chromo,
+                float_operator,
+                schema_prefix["gene_groups"],
+                schema_prefix["float_gene_mask"],
+                schema_prefix["bounds_min"],
+                schema_prefix["bounds_max"],
+            )
+
+        return (
+            self._create_crossover_child(kid_chromo),
+            {
+                "source": "crossover",
+                "bit_operator": bit_operator,
+                "float_operator": float_operator,
+                "eligible_for_reward": self.crossover_policy.is_adaptive,
+            },
+        )
+
+    def _custom_crossover_child(
+        self,
+        method: Callable[[Tardigradas, np.ndarray, np.ndarray], np.ndarray],
+        parent1_chromo: np.ndarray,
+        parent2_chromo: np.ndarray,
+    ) -> tuple[Individual, dict[str, object]]:
+        kid_chromo = method(self, parent1_chromo, parent2_chromo)
+        return (
+            self._create_crossover_child(kid_chromo),
+            {
+                "source": "crossover",
+                "bit_operator": None,
+                "float_operator": None,
+                "eligible_for_reward": False,
+            },
+        )
 
     # ------------------------------------------------------------------
     # Adaptive crossover: statistics update (called once per step)
@@ -520,10 +594,8 @@ class Tardigradas:
         return False
 
     @property
-    def population_chromosomes(self) -> np.ndarray:
-        if not self.population:
-            return np.zeros((0, self.chromo_size), dtype=float)
-        return np.vstack([individual.chromo for individual in self.population])
+    def population_chromosomes(self) -> list[np.ndarray]:
+        return [np.array(individual.chromo, copy=True) for individual in self.population]
 
     def create_individual(
         self,
@@ -548,6 +620,42 @@ class Tardigradas:
                 return random_individual
 
         raise TardigradasException(f"can't create a new random chromosome in {n_attempts} attempts")
+
+    def _validate_chromo_length(self, chromo_length: int) -> int:
+        length = int(chromo_length)
+        if length <= 0:
+            raise ValueError("chromosome length must be positive")
+        if length > self.chromo_size:
+            raise ValueError("chromosome length cannot exceed schema chromo_size")
+        return length
+
+    def _round_int_genes(self, chromo: np.ndarray) -> np.ndarray:
+        rounded = np.array(chromo, dtype=float, copy=True)
+        if rounded.size == 0:
+            return rounded
+
+        int_gene_indices = self.int_gene_indices[self.int_gene_indices < len(rounded)]
+        for index in int_gene_indices:
+            rounded[index] = float(round(float(rounded[index])))
+        return rounded
+
+    def _schema_prefix(self, chromo_length: int) -> dict[str, np.ndarray]:
+        length = self._validate_chromo_length(chromo_length)
+        gen_types = self.gen_types[:length]
+        return {
+            "gen_types": gen_types,
+            "gene_groups": self.chromo_gen_groups[:length],
+            "bit_gene_mask": self.bit_gene_mask[:length],
+            "float_gene_mask": self.float_gene_mask[:length],
+            "bounds_min": self.chromo_bounds_min[:length],
+            "bounds_max": self.chromo_bounds_max[:length],
+            "mutable_positions": np.nonzero(self.chromo_bounds_min[:length] != self.chromo_bounds_max[:length])[0],
+        }
+
+    def _create_crossover_child(self, kid_chromo: np.ndarray) -> Individual:
+        rounded_chromo = self._round_int_genes(np.asarray(kid_chromo, dtype=float).reshape(-1))
+        self._validate_chromo_length(len(rounded_chromo))
+        return self.create_individual(chromo=rounded_chromo)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -588,28 +696,31 @@ class Tardigradas:
                 origins.extend(self._take_last_generated_origins("_last_mutation_origins", len(fallback_kids), "mutation"))
                 continue
 
-            kid_chromo = np.zeros(self.chromo_size, dtype=float)
-            bit_operator = self._select_bit_crossover_operator()
-            float_operator = self._select_float_crossover_operator()
+            if self.problem.has_custom_crossover():
+                kid, origin = self._custom_crossover_child(
+                    self.problem.custom_crossover,
+                    parent1.chromo,
+                    parent2.chromo,
+                )
+            elif len(parent1.chromo) != len(parent2.chromo):
+                if self.problem.has_custom_crossover_mixed_length():
+                    kid, origin = self._custom_crossover_child(
+                        self.problem.custom_crossover_mixed_length,
+                        parent1.chromo,
+                        parent2.chromo,
+                    )
+                else:
+                    fallback_kids = self.mutation(np.array([parent_indices[i]], dtype=int))
+                    kids.extend(fallback_kids)
+                    origins.extend(
+                        self._take_last_generated_origins("_last_mutation_origins", len(fallback_kids), "mutation")
+                    )
+                    continue
+            else:
+                kid, origin = self._standard_crossover_child(parent1.chromo, parent2.chromo)
 
-            if bit_operator is not None:
-                self._apply_bit_crossover(kid_chromo, parent1.chromo, parent2.chromo, bit_operator)
-            if float_operator is not None:
-                self._apply_float_crossover(kid_chromo, parent1.chromo, parent2.chromo, float_operator)
-
-            for i_int_gen in self.int_gene_indices:
-                kid_chromo[i_int_gen] = float(round(float(kid_chromo[i_int_gen])))
-
-            kids.append(self.create_individual(chromo=kid_chromo))
-
-            origins.append(
-                {
-                    "source": "crossover",
-                    "bit_operator": bit_operator,
-                    "float_operator": float_operator,
-                    "eligible_for_reward": self.crossover_policy.is_adaptive,
-                }
-            )
+            kids.append(kid)
+            origins.append(origin)
 
         self._last_crossover_origins = origins
         return kids
@@ -618,27 +729,30 @@ class Tardigradas:
         self._last_mutation_origins = []
         if len(parent_indices) == 0:
             return []
-        if len(self.mutable_positions) == 0:
-            raise TardigradasException("can't mutate chromosome because all genes are fixed")
-
-        n_mutation = int(round(abs(np.random.normal(0, self.chromo_size * self.gen_mutation_fraction))))
-        n_mutation = int(np.clip(n_mutation, 1, max(1, len(self.mutable_positions))))
 
         kids: list[Individual] = []
         origins: list[dict[str, object]] = []
         for i_parent in parent_indices:
+            parent_chromo = self.population[i_parent].chromo
+            schema_prefix = self._schema_prefix(len(parent_chromo))
+            mutable_positions = schema_prefix["mutable_positions"]
+            if len(mutable_positions) == 0:
+                raise TardigradasException("can't mutate chromosome because all genes are fixed")
+
+            n_mutation = int(round(abs(np.random.normal(0, len(parent_chromo) * self.gen_mutation_fraction))))
+            n_mutation = int(np.clip(n_mutation, 1, max(1, len(mutable_positions))))
             n_attempts = 200
             for _ in range(n_attempts):
                 kid_chromo = mutate_chromosome(
-                    parent_chromo=self.population[i_parent].chromo,
-                    gen_types=self.gen_types,
-                    bounds_min=self.chromo_bounds_min,
-                    bounds_max=self.chromo_bounds_max,
-                    mutable_positions=self.mutable_positions,
+                    parent_chromo=parent_chromo,
+                    gen_types=schema_prefix["gen_types"],
+                    bounds_min=schema_prefix["bounds_min"],
+                    bounds_max=schema_prefix["bounds_max"],
+                    mutable_positions=mutable_positions,
                     n_mutation=n_mutation,
                 )
                 kid = self.create_individual(chromo=kid_chromo)
-                if kid.chromo_valid() and not self.problem.is_equal(kid.chromo, self.population[i_parent].chromo):
+                if kid.chromo_valid() and not self.problem.is_equal(kid.chromo, parent_chromo):
                     kids.append(kid)
                     origins.append(self._default_population_origin("mutation"))
                     break

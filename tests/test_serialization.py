@@ -58,7 +58,9 @@ def test_save_to_file_and_restore_from_file_round_trip(engine, tmp_path) -> None
 
     assert restored.iterations == engine.iterations
     assert restored.best_score == engine.best_score
-    assert np.array_equal(restored.population_chromosomes, engine.population_chromosomes)
+    assert len(restored.population_chromosomes) == len(engine.population_chromosomes)
+    for restored_chromo, original_chromo in zip(restored.population_chromosomes, engine.population_chromosomes):
+        assert np.array_equal(restored_chromo, original_chromo)
 
 
 def test_restore_from_dict_preserves_crossover_policy_and_adaptive_state() -> None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from tests.helpers import EmptyFitnessProblem, VectorFitnessProblem, create_engine
+from tests.helpers import EmptyFitnessProblem, VariableLengthProblem, VectorFitnessProblem, create_engine
 
 
 def test_getitem_returns_expected_python_types(engine) -> None:
@@ -62,3 +62,11 @@ def test_random_chromosome_can_apply_defaults(defaults_engine) -> None:
     individual = defaults_engine.create_individual(use_defaults=True)
 
     assert np.array_equal(individual.chromo, np.array([1.0, 2.0, 0.25], dtype=float))
+
+
+def test_random_chromosome_can_use_problem_defined_length() -> None:
+    engine = create_engine(problem=VariableLengthProblem)
+
+    individual = engine.create_individual()
+
+    assert len(individual.chromo) == 2

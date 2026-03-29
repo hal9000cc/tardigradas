@@ -28,11 +28,15 @@ class Individual:
             self.chromo_new(chromo=chromo)
 
     def chromo_new_random(self, use_defaults: bool = False) -> None:
-        ixb_bits = self.tardigradas.gen_types == GenType.bit.value
-        ixb_int = self.tardigradas.gen_types == GenType.int.value
-        ixb_float = self.tardigradas.gen_types == GenType.float.value
+        chromo_size = self.tardigradas.problem.random_chromo_size(self.tardigradas)
+        chromo_size = self.tardigradas._validate_chromo_length(chromo_size)
+        schema_prefix = self.tardigradas._schema_prefix(chromo_size)
 
-        new_chromo = np.zeros(self.tardigradas.chromo_size, dtype=float)
+        ixb_bits = schema_prefix["gen_types"] == GenType.bit.value
+        ixb_int = schema_prefix["gen_types"] == GenType.int.value
+        ixb_float = schema_prefix["gen_types"] == GenType.float.value
+
+        new_chromo = np.zeros(chromo_size, dtype=float)
 
         n_bits = int(ixb_bits.sum())
         if n_bits:
@@ -40,20 +44,22 @@ class Individual:
 
         n_float = int(ixb_float.sum())
         if n_float:
-            new_chromo[ixb_float] = self.tardigradas.chromo_bounds_min[ixb_float] + np.random.random(n_float) * (
-                self.tardigradas.chromo_bounds_max[ixb_float] - self.tardigradas.chromo_bounds_min[ixb_float]
+            new_chromo[ixb_float] = schema_prefix["bounds_min"][ixb_float] + np.random.random(n_float) * (
+                schema_prefix["bounds_max"][ixb_float] - schema_prefix["bounds_min"][ixb_float]
             )
 
         if ixb_int.any():
-            bounds_min = self.tardigradas.chromo_bounds_min[ixb_int].astype(int)
-            bounds_max = self.tardigradas.chromo_bounds_max[ixb_int].astype(int)
+            bounds_min = schema_prefix["bounds_min"][ixb_int].astype(int)
+            bounds_max = schema_prefix["bounds_max"][ixb_int].astype(int)
             new_chromo[ixb_int] = np.random.randint(bounds_min, bounds_max + 1)
 
         if use_defaults:
-            ixb_defaults = ~np.isnan(self.tardigradas.chromo_defaults)
-            ixb_apply_defaults = np.random.random(len(ixb_defaults)) <= self.tardigradas.chromo_defaults_probability
+            defaults = self.tardigradas.chromo_defaults[:chromo_size]
+            defaults_probability = self.tardigradas.chromo_defaults_probability[:chromo_size]
+            ixb_defaults = ~np.isnan(defaults)
+            ixb_apply_defaults = np.random.random(len(ixb_defaults)) <= defaults_probability
             ixb_defaults &= ixb_apply_defaults
-            new_chromo[ixb_defaults] = self.tardigradas.chromo_defaults[ixb_defaults]
+            new_chromo[ixb_defaults] = defaults[ixb_defaults]
 
         self.chromo = new_chromo
 
@@ -63,7 +69,9 @@ class Individual:
         use_defaults: bool = False,
     ) -> None:
         if chromo is not None:
-            self.chromo = np.array(chromo, dtype=float)
+            validated = np.array(chromo, dtype=float).reshape(-1)
+            self.tardigradas._validate_chromo_length(len(validated))
+            self.chromo = validated
             return
 
         self.chromo_new_random(use_defaults=use_defaults)
@@ -81,7 +89,7 @@ class Individual:
     def fitness(self) -> np.ndarray:
         raw_score = self.tardigradas.problem.fitness(self)
         if np.isscalar(raw_score):
-            return np.array([float(raw_score)], dtype=float)
+            return np.asarray([raw_score], dtype=float).reshape(-1)
 
         scores = np.array(raw_score, dtype=float).reshape(-1)
         if scores.size == 0:
