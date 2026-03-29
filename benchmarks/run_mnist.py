@@ -22,7 +22,7 @@ from benchmarks.mnist_helpers import (
 from tardigradas import CrossoverPolicy, create_progress_panel
 
 
-POPULATION_SIZE = 50
+POPULATION_SIZE = 20
 CROSSOVER_FRACTION = 0.6
 FRESH_BLOOD_FRACTION = 0.2
 GEN_MUTATION_FRACTION = 0.02

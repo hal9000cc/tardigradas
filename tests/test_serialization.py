@@ -9,6 +9,7 @@ from tests.helpers import create_engine
 def test_state_dict_contains_critical_runtime_fields(engine) -> None:
     engine.population_init()
     engine.step()
+    assert engine.step_best_individual is not None
 
     state = engine.state_dict()
 
@@ -17,15 +18,21 @@ def test_state_dict_contains_critical_runtime_fields(engine) -> None:
     assert len(state["population"]) == engine.population_size
     assert np.array_equal(state["scores"], engine.scores)
     assert np.array_equal(state["step_best_individual"], engine.step_best_individual.chromo)
+    assert state["step_validate_score"] == engine.step_validate_score
+    assert state["validate_scores_history"] == engine.validate_scores_history
 
 
 def test_restore_from_dict_restores_population_and_best_state(engine) -> None:
     engine.population_init()
     engine.step()
+    assert engine.best_individual is not None
+    assert engine.step_best_individual is not None
     state = engine.state_dict()
 
     restored = create_engine()
     restored.restore_from_dict(state)
+    assert restored.best_individual is not None
+    assert restored.step_best_individual is not None
 
     assert restored.iterations == engine.iterations
     assert restored.best_score == engine.best_score
@@ -35,6 +42,8 @@ def test_restore_from_dict_restores_population_and_best_state(engine) -> None:
     assert np.array_equal(restored.best_individual.chromo, engine.best_individual.chromo)
     assert np.array_equal(restored.step_best_individual.chromo, engine.step_best_individual.chromo)
     assert np.array_equal(restored.scores, engine.scores)
+    assert restored.step_validate_score == engine.step_validate_score
+    assert restored.validate_scores_history == engine.validate_scores_history
 
 
 def test_save_to_file_and_restore_from_file_round_trip(engine, tmp_path) -> None:

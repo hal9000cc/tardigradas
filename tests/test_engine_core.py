@@ -10,6 +10,7 @@ from tests.helpers import (
     FixedGenesProblem,
     NonNegativeFloatProblem,
     RejectAllProblem,
+    ValidateScoreProblem,
     VectorFitnessProblem,
     build_population,
     create_engine,
@@ -49,12 +50,14 @@ def test_population_init_creates_population_and_resets_runtime_state(engine) -> 
     engine.iterations = 99
     engine.scores_history = [1.0]
     engine.custom_scores_history = [np.array([1.0], dtype=float)]
+    engine.validate_scores_history = [0.5]
     engine.best_score = 5.0
     engine.best_iteration = 10
     engine.best_individual = engine.create_individual(chromo=[1.0, 2.0, 0.5])
     engine.step_best_individual = engine.best_individual
     engine.step_score = 5.0
     engine.step_custom_score = np.array([5.0], dtype=float)
+    engine.step_validate_score = 1.5
     engine.scores = np.array([5.0], dtype=float)
     engine.full_scores = np.array([[5.0]], dtype=float)
 
@@ -64,11 +67,13 @@ def test_population_init_creates_population_and_resets_runtime_state(engine) -> 
     assert engine.iterations == 0
     assert engine.scores_history == []
     assert engine.custom_scores_history == []
+    assert engine.validate_scores_history == []
     assert engine.best_score is None
     assert engine.best_individual is None
     assert engine.step_best_individual is None
     assert engine.step_score is None
     assert engine.step_custom_score is None
+    assert engine.step_validate_score is None
     assert engine.scores.shape == (0,)
     assert engine.full_scores.shape == (0, 1)
     assert len(engine.population_origins) == engine.population_size
@@ -319,10 +324,15 @@ def test_step_keeps_scores_histories_in_sync(engine) -> None:
     for _ in range(3):
         engine.step()
 
-    assert len(engine.scores_history) == len(engine.custom_scores_history) == 3
-    for score, custom_score in zip(engine.scores_history, engine.custom_scores_history):
+    assert len(engine.scores_history) == len(engine.custom_scores_history) == len(engine.validate_scores_history) == 3
+    for score, custom_score, validate_score in zip(
+        engine.scores_history,
+        engine.custom_scores_history,
+        engine.validate_scores_history,
+    ):
         assert custom_score.shape == (1,)
         assert score == pytest.approx(custom_score[0])
+        assert validate_score is None
 
 
 def test_step_tracks_vector_fitness_scores() -> None:
@@ -336,6 +346,19 @@ def test_step_tracks_vector_fitness_scores() -> None:
     assert engine.step_custom_score.shape == (2,)
     assert engine.step_score == pytest.approx(engine.step_custom_score[0])
     np.testing.assert_allclose(engine.custom_scores_history[0], engine.step_custom_score)
+
+
+def test_step_tracks_validate_score_for_best_individual() -> None:
+    engine = create_engine(problem=ValidateScoreProblem)
+    engine.population_init()
+
+    engine.step()
+
+    assert engine.step_best_individual is not None
+    assert engine.step_validate_score == pytest.approx(
+        ValidateScoreProblem.validate_score(engine.step_best_individual)
+    )
+    assert engine.validate_scores_history == [engine.step_validate_score]
 
 
 def test_step_uses_expected_number_of_parents(monkeypatch) -> None:
@@ -357,12 +380,14 @@ def test_step_uses_expected_number_of_parents(monkeypatch) -> None:
         ],
     )
 
-    captured: dict[str, np.ndarray | int] = {}
+    captured_expectation: np.ndarray | None = None
+    captured_count: int | None = None
     fresh_blood_calls = {"count": 0}
 
     def fake_select_parents(expectation: np.ndarray, count: int) -> np.ndarray:
-        captured["expectation"] = np.array(expectation, copy=True)
-        captured["count"] = count
+        nonlocal captured_expectation, captured_count
+        captured_expectation = np.array(expectation, copy=True)
+        captured_count = count
         return np.arange(count, dtype=int) % len(expectation)
 
     def fake_new_valid_individual(use_defaults: bool = False):
@@ -392,8 +417,9 @@ def test_step_uses_expected_number_of_parents(monkeypatch) -> None:
 
     engine.step()
 
-    assert captured["count"] == 6
-    assert captured["expectation"].shape == (engine.population_size,)
+    assert captured_count == 6
+    assert captured_expectation is not None
+    assert captured_expectation.shape == (engine.population_size,)
     assert fresh_blood_calls["count"] == 1
 
 

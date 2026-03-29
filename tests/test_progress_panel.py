@@ -4,7 +4,7 @@ import numpy as np
 
 import tardigradas.progress_panel as progress_panel_module
 from tardigradas import CrossoverBitType, CrossoverFloatType, CrossoverPolicy, create_progress_panel
-from tests.helpers import VectorFitnessProblem, create_engine
+from tests.helpers import ValidateScoreProblem, VectorFitnessProblem, VectorValidateScoreProblem, create_engine
 
 
 def test_create_progress_panel_falls_back_without_matplotlib(monkeypatch) -> None:
@@ -43,6 +43,7 @@ def test_progress_panel_builds_sorted_population_bars_with_origin_colors() -> No
     assert snapshot.population_mean_score == np.mean(engine.scores)
     assert snapshot.population_max_score == np.max(engine.scores)
     assert snapshot.custom_score == 0.25
+    assert snapshot.validate_score is None
     assert snapshot.score_improvement == 1.0
     assert snapshot.killed_doubles == 2
     assert [bar.source for bar in snapshot.population_bars] == ["elite", "crossover", "mutation", "fresh"]
@@ -61,6 +62,7 @@ def test_progress_panel_omits_custom_score_when_fitness_has_single_component() -
     snapshot = panel.build_snapshot(engine)
 
     assert snapshot.custom_score is None
+    assert progress_panel_module._visible_left_plot_keys([snapshot]) == ("score",)
 
 
 def test_progress_panel_uses_second_fitness_component_as_custom_score() -> None:
@@ -73,6 +75,37 @@ def test_progress_panel_uses_second_fitness_component_as_custom_score() -> None:
 
     assert engine.step_custom_score is not None
     assert snapshot.custom_score == float(engine.step_custom_score[1])
+    assert progress_panel_module._visible_left_plot_keys([snapshot]) == ("score", "custom_score")
+
+
+def test_progress_panel_uses_validate_score_when_available() -> None:
+    engine = create_engine(problem=ValidateScoreProblem, population_size=3)
+    engine.population_init()
+    engine.step()
+
+    panel = create_progress_panel(prefer_matplotlib=False)
+    snapshot = panel.build_snapshot(engine)
+
+    assert engine.step_validate_score is not None
+    assert snapshot.validate_score == engine.step_validate_score
+    assert progress_panel_module._visible_left_plot_keys([snapshot]) == ("score", "validate_score")
+
+
+def test_progress_panel_exposes_all_three_left_plots_when_custom_and_validate_are_available() -> None:
+    engine = create_engine(problem=VectorValidateScoreProblem, population_size=3)
+    engine.population_init()
+    engine.step()
+
+    panel = create_progress_panel(prefer_matplotlib=False)
+    snapshot = panel.build_snapshot(engine)
+
+    assert snapshot.custom_score is not None
+    assert snapshot.validate_score is not None
+    assert progress_panel_module._visible_left_plot_keys([snapshot]) == (
+        "score",
+        "custom_score",
+        "validate_score",
+    )
 
 
 def test_progress_panel_exposes_adaptive_probabilities() -> None:

@@ -93,6 +93,18 @@ class VectorFitnessProblem(DummyProblem):
         return [float(individual[0] + individual[1]), float(individual[2])]
 
 
+class ValidateScoreProblem(DummyProblem):
+    @staticmethod
+    def validate_score(individual: Individual) -> float:
+        return float(individual[1] - individual[2])
+
+
+class VectorValidateScoreProblem(VectorFitnessProblem):
+    @staticmethod
+    def validate_score(individual: Individual) -> float:
+        return float(individual[1] - individual[2])
+
+
 class EmptyFitnessProblem(DummyProblem):
     @staticmethod
     def fitness(individual: Individual) -> list[float]:

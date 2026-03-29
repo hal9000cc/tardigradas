@@ -14,11 +14,13 @@ def state_dict(engine: Any) -> dict[str, Any]:
         "epoch_score": engine.step_score,
         "step_score": engine.step_score,
         "step_custom_score": engine.step_custom_score,
+        "step_validate_score": engine.step_validate_score,
         "iterations": engine.iterations,
         "scores_epoch": engine.scores_history,
         "scores_history": engine.scores_history,
         "custom_scores_epoch": engine.custom_scores_history,
         "custom_scores_history": engine.custom_scores_history,
+        "validate_scores_history": engine.validate_scores_history,
         "crossover_fraction": engine.crossover_fraction,
         "fresh_blood_fraction": engine.fresh_blood_fraction,
         "gen_mutation_fraction": engine.gen_mutation_fraction,
@@ -64,9 +66,11 @@ def state_dict(engine: Any) -> dict[str, Any]:
 def restore_from_dict(engine: Any, state: dict[str, Any]) -> None:
     engine.step_score = state.get("step_score", state.get("epoch_score"))
     engine.step_custom_score = state.get("step_custom_score")
+    engine.step_validate_score = state.get("step_validate_score")
     engine.iterations = int(state.get("iterations", 0))
     engine.scores_history = list(state.get("scores_history", state.get("scores_epoch", [])))
     engine.custom_scores_history = list(state.get("custom_scores_history", state.get("custom_scores_epoch", [])))
+    engine.validate_scores_history = list(state.get("validate_scores_history", []))
     engine.crossover_fraction = float(state.get("crossover_fraction", engine.crossover_fraction))
     engine.fresh_blood_fraction = float(state.get("fresh_blood_fraction", engine.fresh_blood_fraction))
     engine.gen_mutation_fraction = float(state.get("gen_mutation_fraction", engine.gen_mutation_fraction))

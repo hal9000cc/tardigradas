@@ -34,8 +34,25 @@ class Problem(ABC):
         raise NotImplementedError
 
     @staticmethod
+    def validate_score(individual: Individual) -> Union[Sequence[float], float, None]:
+        return None
+
+    @classmethod
+    def has_validate_score(cls) -> bool:
+        return cls.validate_score is not Problem.validate_score
+
+    @staticmethod
     def chromo_valid(individual: Individual) -> bool:
         return True
+
+    @staticmethod
+    def _to_optional_score(value: Union[Sequence[float], float, None]) -> float | None:
+        if value is None:
+            return None
+        values = np.asarray(value, dtype=float).reshape(-1)
+        if values.size == 0:
+            return None
+        return float(values[0])
 
     @staticmethod
     def _to_chromo_array(value: ChromoLike) -> np.ndarray:

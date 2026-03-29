@@ -59,6 +59,7 @@ pip install -e .[plot]
 - `init_environment(tardigradas)` — инициализация окружения задачи;
 - `gen_info(tardigradas) -> ChromosomeSchema` — описание структуры хромосомы;
 - `fitness(individual)` — расчёт функции приспособленности;
+- `validate_score(individual)` — опциональная дополнительная score-метрика для лидера эпохи;
 - `chromo_valid(individual)` — опциональная дополнительная валидация.
 
 ## Формат `ChromosomeSchema`
@@ -94,6 +95,8 @@ schema = ChromosomeSchema(
 
 - первый элемент — основная метрика оптимизации;
 - остальные элементы — дополнительные метрики, если они нужны.
+
+Опциональный метод `validate_score()` вызывается на каждой эпохе только для лучшей особи текущего шага. Если метод не переопределён или возвращает `None`, дополнительная validate-метрика не используется.
 
 Примеры:
 
@@ -260,9 +263,17 @@ policy = CrossoverPolicy.adaptive(
 
 - график `Score` с `population_mean_score` и `population_max_score`;
 - отдельный график `Custom score` для второй компоненты fitness-вектора, если она есть;
+- отдельный график `Validate score`, если `Problem.validate_score()` возвращает значение для лидера эпохи;
 - график `Improved` с `score_improvement` и `killed_doubles`;
 - bar chart текущей популяции, отсортированной по убыванию score, с цветами по происхождению особей;
 - adaptive probabilities операторов кроссовера, если включена adaptive policy.
+
+Левая колонка панели собирается динамически:
+
+- только `Score`, если доступны только основные score-метрики;
+- `Score` + `Custom score`, если `fitness()` возвращает вторую компоненту;
+- `Score` + `Validate score`, если есть validate-метрика, но нет `custom_score`;
+- `Score` + `Custom score` + `Validate score`, если доступны обе дополнительные метрики.
 
 Пример использования:
 

@@ -87,12 +87,14 @@ class Tardigradas:
         self.iterations = 0
         self.scores_history: list[float] = []
         self.custom_scores_history: list[np.ndarray] = []
+        self.validate_scores_history: list[float | None] = []
         self.best_score: Optional[float] = None
         self.best_iteration = 0
         self.best_individual: Optional[Individual] = None
         self.step_best_individual: Optional[Individual] = None
         self.step_score: Optional[float] = None
         self.step_custom_score: Optional[np.ndarray] = None
+        self.step_validate_score: Optional[float] = None
         self.fitness_progress_fun: Optional[Callable[[Tardigradas, float], object]] = None
         self.scores = np.zeros(0, dtype=float)
         self.full_scores = np.zeros((0, 1), dtype=float)
@@ -558,12 +560,14 @@ class Tardigradas:
         self.iterations = 0
         self.scores_history = []
         self.custom_scores_history = []
+        self.validate_scores_history = []
         self.best_score = None
         self.best_iteration = 0
         self.best_individual = None
         self.step_best_individual = None
         self.step_score = None
         self.step_custom_score = None
+        self.step_validate_score = None
         self.fitness_progress_fun = None
         self.scores = np.zeros(0, dtype=float)
         self.full_scores = np.zeros((0, 1), dtype=float)
@@ -725,6 +729,11 @@ class Tardigradas:
         self.step_score = float(self.scores[ix_best[0]])
         self.step_custom_score = self.full_scores[ix_best[0]]
         self.step_best_individual = self.population[ix_best[0]]
+        self.step_validate_score = None
+        if self.step_best_individual is not None and self.problem.has_validate_score():
+            self.step_validate_score = self.problem._to_optional_score(
+                self.problem.validate_score(self.step_best_individual)
+            )
 
         if self.best_score is None or self.step_score > self.best_score:
             self.best_score = self.step_score
@@ -733,6 +742,7 @@ class Tardigradas:
 
         self.scores_history.append(self.step_score)
         self.custom_scores_history.append(self.step_custom_score)
+        self.validate_scores_history.append(self.step_validate_score)
 
         kids_crossover = self.crossover(parent_indices[: 2 * n_crossover]) if n_crossover else []
         kids_crossover_origins = self._take_last_generated_origins("_last_crossover_origins", len(kids_crossover), "crossover")

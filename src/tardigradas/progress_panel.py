@@ -35,6 +35,7 @@ class ProgressSnapshot:
     population_mean_score: float | None
     population_max_score: float | None
     custom_score: float | None
+    validate_score: float | None
     score_improvement: float | None
     killed_doubles: int
     population_bars: tuple[PopulationBarEntry, ...]
@@ -144,6 +145,20 @@ def _history_series(
     return np.array(values, dtype=float)
 
 
+def _visible_left_plot_keys(history: list[ProgressSnapshot]) -> tuple[str, ...]:
+    plot_keys = ["score"]
+
+    custom_score_values = _history_series(history, lambda item: item.custom_score)
+    if not np.isnan(custom_score_values).all():
+        plot_keys.append("custom_score")
+
+    validate_score_values = _history_series(history, lambda item: item.validate_score)
+    if not np.isnan(validate_score_values).all():
+        plot_keys.append("validate_score")
+
+    return tuple(plot_keys)
+
+
 class _MatplotlibProgressRenderer:
     def __init__(self, *, pyplot: Any, patches: Any, title: str) -> None:
         self._pyplot = pyplot
@@ -152,13 +167,6 @@ class _MatplotlibProgressRenderer:
 
         self._pyplot.ion()
         self._figure = self._pyplot.figure(figsize=(15, 10))
-        grid = self._figure.add_gridspec(6, 2, hspace=0.9, wspace=0.35)
-        self._score_axis = self._figure.add_subplot(grid[:3, 0])
-        self._custom_score_axis = self._figure.add_subplot(grid[3:, 0])
-        self._population_axis = self._figure.add_subplot(grid[:2, 1])
-        self._improved_axis = self._figure.add_subplot(grid[2:4, 1])
-        self._adaptive_axis = self._figure.add_subplot(grid[4:, 1])
-        self._improved_secondary_axis = self._improved_axis.twinx()
 
     def render(self, history: list[ProgressSnapshot]) -> None:
         if not history:
@@ -166,19 +174,30 @@ class _MatplotlibProgressRenderer:
 
         latest = history[-1]
         iterations = [snapshot.iteration for snapshot in history]
+        left_plot_keys = _visible_left_plot_keys(history)
 
-        self._score_axis.clear()
-        self._custom_score_axis.clear()
-        self._population_axis.clear()
-        self._improved_axis.clear()
-        self._improved_secondary_axis.clear()
-        self._adaptive_axis.clear()
+        self._figure.clear()
+        outer_grid = self._figure.add_gridspec(1, 2, wspace=0.35)
+        left_grid = outer_grid[0, 0].subgridspec(len(left_plot_keys), 1, hspace=0.6)
+        right_grid = outer_grid[0, 1].subgridspec(3, 1, hspace=0.6)
 
-        self._plot_scores(iterations, history)
-        self._plot_custom_score(iterations, history)
-        self._plot_population(latest)
-        self._plot_improved(iterations, history)
-        self._plot_adaptive(iterations, history, latest)
+        left_axes = {
+            plot_key: self._figure.add_subplot(left_grid[index, 0])
+            for index, plot_key in enumerate(left_plot_keys)
+        }
+        population_axis = self._figure.add_subplot(right_grid[0, 0])
+        improved_axis = self._figure.add_subplot(right_grid[1, 0])
+        improved_secondary_axis = improved_axis.twinx()
+        adaptive_axis = self._figure.add_subplot(right_grid[2, 0])
+
+        self._plot_scores(left_axes["score"], iterations, history)
+        if "custom_score" in left_axes:
+            self._plot_custom_score(left_axes["custom_score"], iterations, history)
+        if "validate_score" in left_axes:
+            self._plot_validate_score(left_axes["validate_score"], iterations, history)
+        self._plot_population(population_axis, latest)
+        self._plot_improved(improved_axis, improved_secondary_axis, iterations, history)
+        self._plot_adaptive(adaptive_axis, iterations, history, latest)
 
         self._figure.suptitle(f"{self._title} · epoch {latest.iteration}")
         self._figure.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
@@ -187,7 +206,7 @@ class _MatplotlibProgressRenderer:
             self._figure.canvas.flush_events()
         self._pyplot.pause(0.001)
 
-    def _plot_scores(self, iterations: list[int], history: list[ProgressSnapshot]) -> None:
+    def _plot_scores(self, axis: Any, iterations: list[int], history: list[ProgressSnapshot]) -> None:
         series = [
             ("population_mean_score", lambda item: item.population_mean_score),
             ("population_max_score", lambda item: item.population_max_score),
@@ -196,78 +215,80 @@ class _MatplotlibProgressRenderer:
             values = _history_series(history, extractor)
             if np.isnan(values).all():
                 continue
-            self._score_axis.plot(iterations, values, label=label)
+            axis.plot(iterations, values, label=label)
 
-        self._score_axis.set_title("Score trends")
-        self._score_axis.set_xlabel("Epoch")
-        self._score_axis.set_ylabel("Score")
-        if self._score_axis.lines:
-            self._score_axis.legend(loc="best")
+        axis.set_title("Score trends")
+        axis.set_xlabel("Epoch")
+        axis.set_ylabel("Score")
+        if axis.lines:
+            axis.legend(loc="best")
 
-    def _plot_custom_score(self, iterations: list[int], history: list[ProgressSnapshot]) -> None:
+    def _plot_custom_score(self, axis: Any, iterations: list[int], history: list[ProgressSnapshot]) -> None:
         custom_score_values = _history_series(history, lambda item: item.custom_score)
-        if np.isnan(custom_score_values).all():
-            self._custom_score_axis.text(
-                0.5,
-                0.5,
-                "Custom score is unavailable",
-                ha="center",
-                va="center",
-                transform=self._custom_score_axis.transAxes,
-            )
-            self._custom_score_axis.set_title("Custom score")
-            return
+        axis.plot(iterations, custom_score_values, label="custom_score", color="tab:orange")
+        axis.set_title("Custom score")
+        axis.set_xlabel("Epoch")
+        axis.set_ylabel("Custom score")
+        axis.legend(loc="best")
 
-        self._custom_score_axis.plot(iterations, custom_score_values, label="custom_score", color="tab:orange")
-        self._custom_score_axis.set_title("Custom score")
-        self._custom_score_axis.set_xlabel("Epoch")
-        self._custom_score_axis.set_ylabel("Custom score")
-        self._custom_score_axis.legend(loc="best")
+    def _plot_validate_score(self, axis: Any, iterations: list[int], history: list[ProgressSnapshot]) -> None:
+        validate_score_values = _history_series(history, lambda item: item.validate_score)
+        axis.plot(iterations, validate_score_values, label="validate_score", color="tab:green")
+        axis.set_title("Validate score")
+        axis.set_xlabel("Epoch")
+        axis.set_ylabel("Validate score")
+        axis.legend(loc="best")
 
-    def _plot_improved(self, iterations: list[int], history: list[ProgressSnapshot]) -> None:
+    def _plot_improved(
+        self,
+        axis: Any,
+        secondary_axis: Any,
+        iterations: list[int],
+        history: list[ProgressSnapshot],
+    ) -> None:
         improvement_values = _history_series(history, lambda item: item.score_improvement)
         killed_doubles_values = _history_series(history, lambda item: float(item.killed_doubles))
 
         if not np.isnan(improvement_values).all():
-            self._improved_axis.plot(iterations, improvement_values, label="score_improvement", color="tab:blue")
+            axis.plot(iterations, improvement_values, label="score_improvement", color="tab:blue")
         if not np.isnan(killed_doubles_values).all():
-            self._improved_secondary_axis.plot(
+            secondary_axis.plot(
                 iterations,
                 killed_doubles_values,
                 label="killed_doubles",
                 color="tab:purple",
             )
 
-        self._improved_axis.set_title("Improved")
-        self._improved_axis.set_xlabel("Epoch")
-        self._improved_axis.set_ylabel("Score improvement")
-        self._improved_secondary_axis.set_ylabel("Killed doubles")
+        axis.set_title("Improved")
+        axis.set_xlabel("Epoch")
+        axis.set_ylabel("Score improvement")
+        secondary_axis.set_ylabel("Killed doubles")
 
-        handles = list(self._improved_axis.lines) + list(self._improved_secondary_axis.lines)
+        handles = list(axis.lines) + list(secondary_axis.lines)
         if handles:
             labels = [line.get_label() for line in handles]
-            self._improved_axis.legend(handles, labels, loc="best")
+            axis.legend(handles, labels, loc="best")
 
-    def _plot_population(self, latest: ProgressSnapshot) -> None:
+    def _plot_population(self, axis: Any, latest: ProgressSnapshot) -> None:
         if not latest.population_bars:
-            self._population_axis.text(
+            axis.text(
                 0.5,
                 0.5,
                 "Population scores are unavailable",
                 ha="center",
                 va="center",
-                transform=self._population_axis.transAxes,
+                transform=axis.transAxes,
             )
-            self._population_axis.set_title("Population scores")
+            axis.set_title("Population scores")
             return
 
         ranks = [bar.rank for bar in latest.population_bars]
         scores = [bar.score for bar in latest.population_bars]
         colors = [bar.color for bar in latest.population_bars]
-        self._population_axis.bar(ranks, scores, color=colors, edgecolor="black", linewidth=0.5)
-        self._population_axis.set_title("Population scores by origin")
-        self._population_axis.set_xlabel("Rank (descending score)")
-        self._population_axis.set_ylabel("Score")
+        axis.bar(ranks, scores, color=colors, edgecolor="black", linewidth=0.5)
+        axis.set_title("Population scores by origin")
+        axis.set_xlabel("Rank (descending score)")
+        axis.set_ylabel("Score")
 
         sources_in_plot: list[str] = []
         for bar in latest.population_bars:
@@ -283,24 +304,25 @@ class _MatplotlibProgressRenderer:
             for source in sources_in_plot
         ]
         if legend_handles:
-            self._population_axis.legend(handles=legend_handles, loc="best")
+            axis.legend(handles=legend_handles, loc="best")
 
     def _plot_adaptive(
         self,
+        axis: Any,
         iterations: list[int],
         history: list[ProgressSnapshot],
         latest: ProgressSnapshot,
     ) -> None:
         if not latest.adaptive_mode:
-            self._adaptive_axis.text(
+            axis.text(
                 0.5,
                 0.5,
                 "Adaptive crossover is disabled",
                 ha="center",
                 va="center",
-                transform=self._adaptive_axis.transAxes,
+                transform=axis.transAxes,
             )
-            self._adaptive_axis.set_title("Adaptive crossover")
+            axis.set_title("Adaptive crossover")
             return
 
         bit_names = sorted({name for snapshot in history for name in snapshot.adaptive_bit_probabilities})
@@ -311,20 +333,20 @@ class _MatplotlibProgressRenderer:
                 [snapshot.adaptive_bit_probabilities.get(name, np.nan) for snapshot in history],
                 dtype=float,
             )
-            self._adaptive_axis.plot(iterations, values, label=f"bit:{name}")
+            axis.plot(iterations, values, label=f"bit:{name}")
 
         for name in float_names:
             values = np.array(
                 [snapshot.adaptive_float_probabilities.get(name, np.nan) for snapshot in history],
                 dtype=float,
             )
-            self._adaptive_axis.plot(iterations, values, label=f"float:{name}", linestyle="--")
+            axis.plot(iterations, values, label=f"float:{name}", linestyle="--")
 
-        self._adaptive_axis.set_title("Adaptive crossover probabilities")
-        self._adaptive_axis.set_xlabel("Epoch")
-        self._adaptive_axis.set_ylabel("Probability")
-        if self._adaptive_axis.lines:
-            self._adaptive_axis.legend(loc="best")
+        axis.set_title("Adaptive crossover probabilities")
+        axis.set_xlabel("Epoch")
+        axis.set_ylabel("Probability")
+        if axis.lines:
+            axis.legend(loc="best")
 
     def show(self, *, block: bool) -> None:
         self._pyplot.show(block=block)
@@ -352,6 +374,9 @@ class ProgressPanel:
         population_mean_score = float(np.mean(engine.scores)) if engine.scores.size else None
         population_max_score = float(np.max(engine.scores)) if engine.scores.size else None
         custom_score = _custom_score_from_vector(engine.step_custom_score)
+        validate_score = _optional_float(getattr(engine, "step_validate_score", None))
+        if validate_score is None and engine.step_best_individual is not None and engine.problem.has_validate_score():
+            validate_score = engine.problem._to_optional_score(engine.problem.validate_score(engine.step_best_individual))
         current_best_score = _optional_float(engine.best_score)
         if current_best_score is None:
             current_best_score = _optional_float(engine.step_score)
@@ -372,6 +397,7 @@ class ProgressPanel:
             population_mean_score=population_mean_score,
             population_max_score=population_max_score,
             custom_score=custom_score,
+            validate_score=validate_score,
             score_improvement=score_improvement,
             killed_doubles=int(engine.n_killed_doubles),
             population_bars=_build_population_bars(engine),
