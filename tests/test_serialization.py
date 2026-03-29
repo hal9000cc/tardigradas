@@ -61,8 +61,9 @@ def test_restore_from_dict_preserves_crossover_policy_and_adaptive_state() -> No
         )
     )
     engine.population_init()
-    engine._adaptive_bit_uses[CrossoverBitType.one_point] = 3
-    engine._adaptive_bit_successes[CrossoverBitType.one_point] = 2
+    engine._adaptive_bit_epoch_uses[CrossoverBitType.one_point] = 3
+    engine._adaptive_bit_epoch_successes[CrossoverBitType.one_point] = 2
+    engine._adaptive_bit_scores[CrossoverBitType.one_point] = 0.75
     engine.population_origins[0] = {
         "source": "crossover",
         "bit_operator": CrossoverBitType.one_point,
@@ -74,6 +75,7 @@ def test_restore_from_dict_preserves_crossover_policy_and_adaptive_state() -> No
     restored.restore_from_dict(engine.state_dict())
 
     assert restored.crossover_policy == engine.crossover_policy
-    assert restored._adaptive_bit_uses == engine._adaptive_bit_uses
-    assert restored._adaptive_bit_successes == engine._adaptive_bit_successes
+    assert restored._adaptive_bit_epoch_uses == engine._adaptive_bit_epoch_uses
+    assert restored._adaptive_bit_epoch_successes == engine._adaptive_bit_epoch_successes
+    assert restored._adaptive_bit_scores == engine._adaptive_bit_scores
     assert restored.population_origins == engine.population_origins

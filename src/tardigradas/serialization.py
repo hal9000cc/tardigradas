@@ -41,10 +41,23 @@ def state_dict(engine: Any) -> dict[str, Any]:
         "population": [individual.chromo for individual in engine.population],
         "population_origins": [dict(origin) for origin in getattr(engine, "population_origins", [])],
         "crossover_policy": getattr(engine, "crossover_policy", None),
-        "adaptive_bit_uses": dict(getattr(engine, "_adaptive_bit_uses", {})),
-        "adaptive_bit_successes": dict(getattr(engine, "_adaptive_bit_successes", {})),
-        "adaptive_float_uses": dict(getattr(engine, "_adaptive_float_uses", {})),
-        "adaptive_float_successes": dict(getattr(engine, "_adaptive_float_successes", {})),
+        # EMA scores and probabilities
+        "adaptive_bit_scores": dict(getattr(engine, "_adaptive_bit_scores", {})),
+        "adaptive_bit_probabilities": dict(getattr(engine, "_adaptive_bit_probabilities", {})),
+        "adaptive_float_scores": dict(getattr(engine, "_adaptive_float_scores", {})),
+        "adaptive_float_probabilities": dict(getattr(engine, "_adaptive_float_probabilities", {})),
+        # Within-epoch counters
+        "adaptive_bit_epoch_uses": dict(getattr(engine, "_adaptive_bit_epoch_uses", {})),
+        "adaptive_bit_epoch_successes": dict(getattr(engine, "_adaptive_bit_epoch_successes", {})),
+        "adaptive_float_epoch_uses": dict(getattr(engine, "_adaptive_float_epoch_uses", {})),
+        "adaptive_float_epoch_successes": dict(getattr(engine, "_adaptive_float_epoch_successes", {})),
+        # Previous-epoch snapshots
+        "adaptive_last_bit_epoch_uses": dict(getattr(engine, "_adaptive_last_bit_epoch_uses", {})),
+        "adaptive_last_bit_epoch_successes": dict(getattr(engine, "_adaptive_last_bit_epoch_successes", {})),
+        "adaptive_last_bit_instant_scores": dict(getattr(engine, "_adaptive_last_bit_instant_scores", {})),
+        "adaptive_last_float_epoch_uses": dict(getattr(engine, "_adaptive_last_float_epoch_uses", {})),
+        "adaptive_last_float_epoch_successes": dict(getattr(engine, "_adaptive_last_float_epoch_successes", {})),
+        "adaptive_last_float_instant_scores": dict(getattr(engine, "_adaptive_last_float_instant_scores", {})),
     }
 
 
@@ -82,10 +95,23 @@ def restore_from_dict(engine: Any, state: dict[str, Any]) -> None:
     else:
         engine.population_origins = [engine._clone_population_origin(origin) for origin in restored_origins]
 
-    engine._adaptive_bit_uses.update(state.get("adaptive_bit_uses", {}))
-    engine._adaptive_bit_successes.update(state.get("adaptive_bit_successes", {}))
-    engine._adaptive_float_uses.update(state.get("adaptive_float_uses", {}))
-    engine._adaptive_float_successes.update(state.get("adaptive_float_successes", {}))
+    # Restore EMA scores and probabilities
+    engine._adaptive_bit_scores.update(state.get("adaptive_bit_scores", {}))
+    engine._adaptive_bit_probabilities.update(state.get("adaptive_bit_probabilities", {}))
+    engine._adaptive_float_scores.update(state.get("adaptive_float_scores", {}))
+    engine._adaptive_float_probabilities.update(state.get("adaptive_float_probabilities", {}))
+    # Restore within-epoch counters
+    engine._adaptive_bit_epoch_uses.update(state.get("adaptive_bit_epoch_uses", {}))
+    engine._adaptive_bit_epoch_successes.update(state.get("adaptive_bit_epoch_successes", {}))
+    engine._adaptive_float_epoch_uses.update(state.get("adaptive_float_epoch_uses", {}))
+    engine._adaptive_float_epoch_successes.update(state.get("adaptive_float_epoch_successes", {}))
+    # Restore previous-epoch snapshots
+    engine._adaptive_last_bit_epoch_uses.update(state.get("adaptive_last_bit_epoch_uses", {}))
+    engine._adaptive_last_bit_epoch_successes.update(state.get("adaptive_last_bit_epoch_successes", {}))
+    engine._adaptive_last_bit_instant_scores.update(state.get("adaptive_last_bit_instant_scores", {}))
+    engine._adaptive_last_float_epoch_uses.update(state.get("adaptive_last_float_epoch_uses", {}))
+    engine._adaptive_last_float_epoch_successes.update(state.get("adaptive_last_float_epoch_successes", {}))
+    engine._adaptive_last_float_instant_scores.update(state.get("adaptive_last_float_instant_scores", {}))
 
     engine.full_scores = np.zeros((0, 1), dtype=float)
     engine.fitness_progress_fun = None

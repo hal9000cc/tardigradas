@@ -11,10 +11,15 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 
-from tardigradas import ChromosomeSchema, GenType, Individual, Problem, Tardigradas
+from ._paths import PROJECT_ROOT, ensure_project_paths
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+ensure_project_paths()
+
+
+from tardigradas import ChromosomeSchema, CrossoverPolicy, GenType, Individual, Problem, Tardigradas
+
+
 DEFAULT_MNIST_ROOT = PROJECT_ROOT / ".data" / "mnist"
 DEFAULT_BATCH_SIZE = 4096
 DEFAULT_WEIGHT_BOUND = 0.25
@@ -332,6 +337,7 @@ def create_mnist_benchmark_engine(
     gen_mutation_fraction: float = 0.02,
     n_elits: int = 2,
     fitness_environment: MnistBenchmarkEnvironment | None = None,
+    crossover_policy: CrossoverPolicy | None = None,
 ) -> Tardigradas:
     return Tardigradas(
         problem=problem,
@@ -341,4 +347,5 @@ def create_mnist_benchmark_engine(
         gen_mutation_fraction=gen_mutation_fraction,
         fitness_environment=fitness_environment,
         n_elits=n_elits,
+        crossover_policy=crossover_policy,
     )

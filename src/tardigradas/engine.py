@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import datetime as dt
 import gc
-from typing import Callable, Optional, Sequence, Union
+from collections.abc import Sequence as CollectionSequence
+from typing import Callable, Optional, Sequence, TypeVar, Union
 
 import numpy as np
 
@@ -23,6 +24,9 @@ from .operators import (
 from .problem import Problem
 from .schema import ChromosomeSchema
 from .serialization import restore_from_dict, restore_from_file, save_to_file, state_dict
+
+
+TCrossoverOperator = TypeVar("TCrossoverOperator", CrossoverBitType, CrossoverFloatType)
 
 
 class Tardigradas:
@@ -96,11 +100,28 @@ class Tardigradas:
         self.population_origins: list[dict[str, object]] = []
         self._last_crossover_origins: list[dict[str, object]] = []
         self._last_mutation_origins: list[dict[str, object]] = []
-        self._adaptive_bit_uses: dict[CrossoverBitType, int] = {}
-        self._adaptive_bit_successes: dict[CrossoverBitType, int] = {}
-        self._adaptive_float_uses: dict[CrossoverFloatType, int] = {}
-        self._adaptive_float_successes: dict[CrossoverFloatType, int] = {}
+        # EMA scores and selection probabilities
+        self._adaptive_bit_scores: dict[CrossoverBitType, float] = {}
+        self._adaptive_bit_probabilities: dict[CrossoverBitType, float] = {}
+        self._adaptive_float_scores: dict[CrossoverFloatType, float] = {}
+        self._adaptive_float_probabilities: dict[CrossoverFloatType, float] = {}
+        # Within-epoch counters (reset each epoch after statistics update)
+        self._adaptive_bit_epoch_uses: dict[CrossoverBitType, int] = {}
+        self._adaptive_bit_epoch_successes: dict[CrossoverBitType, int] = {}
+        self._adaptive_float_epoch_uses: dict[CrossoverFloatType, int] = {}
+        self._adaptive_float_epoch_successes: dict[CrossoverFloatType, int] = {}
+        # Snapshot of the previous epoch (used for reporting only)
+        self._adaptive_last_bit_epoch_uses: dict[CrossoverBitType, int] = {}
+        self._adaptive_last_bit_epoch_successes: dict[CrossoverBitType, int] = {}
+        self._adaptive_last_bit_instant_scores: dict[CrossoverBitType, Optional[float]] = {}
+        self._adaptive_last_float_epoch_uses: dict[CrossoverFloatType, int] = {}
+        self._adaptive_last_float_epoch_successes: dict[CrossoverFloatType, int] = {}
+        self._adaptive_last_float_instant_scores: dict[CrossoverFloatType, Optional[float]] = {}
         self._reset_crossover_runtime_state()
+
+    # ------------------------------------------------------------------
+    # Population origin helpers
+    # ------------------------------------------------------------------
 
     def _default_population_origin(self, source: str) -> dict[str, object]:
         return {
@@ -118,24 +139,11 @@ class Tardigradas:
             "eligible_for_reward": bool(origin.get("eligible_for_reward", False)),
         }
 
-    def _reset_crossover_runtime_state(self) -> None:
-        self.population_origins = []
-        self._last_crossover_origins = []
-        self._last_mutation_origins = []
-        self._adaptive_bit_uses = {}
-        self._adaptive_bit_successes = {}
-        self._adaptive_float_uses = {}
-        self._adaptive_float_successes = {}
-
-        if not self.crossover_policy.is_adaptive:
-            return
-
-        for operator in self.crossover_policy.bit_candidates:
-            self._adaptive_bit_uses[operator] = 0
-            self._adaptive_bit_successes[operator] = 0
-        for operator in self.crossover_policy.float_candidates:
-            self._adaptive_float_uses[operator] = 0
-            self._adaptive_float_successes[operator] = 0
+    def _copy_origin_for_elitism(self, origin: dict[str, object]) -> dict[str, object]:
+        copied_origin = self._clone_population_origin(origin)
+        copied_origin["source"] = "elite"
+        copied_origin["eligible_for_reward"] = False
+        return copied_origin
 
     def _ensure_population_origins(self) -> None:
         if len(self.population_origins) == len(self.population):
@@ -149,43 +157,140 @@ class Tardigradas:
             return [self._default_population_origin(source) for _ in range(expected_count)]
         return generated_origins
 
-    def _copy_origin_for_elitism(self, origin: dict[str, object]) -> dict[str, object]:
-        copied_origin = self._clone_population_origin(origin)
-        copied_origin["source"] = "elite"
-        copied_origin["eligible_for_reward"] = False
-        return copied_origin
+    # ------------------------------------------------------------------
+    # Adaptive crossover: state initialization
+    # ------------------------------------------------------------------
 
-    def _adaptive_probabilities(
-        self,
-        candidates: Sequence[Union[CrossoverBitType, CrossoverFloatType]],
-        uses: dict[Union[CrossoverBitType, CrossoverFloatType], int],
-        successes: dict[Union[CrossoverBitType, CrossoverFloatType], int],
-    ) -> np.ndarray:
-        probabilities = np.array(
-            [
-                (successes[candidate] + 1.0) / (uses[candidate] + 2.0)
-                for candidate in candidates
-            ],
-            dtype=float,
+    def _reset_crossover_runtime_state(self) -> None:
+        self.population_origins = []
+        self._last_crossover_origins = []
+        self._last_mutation_origins = []
+        self._adaptive_bit_scores = {}
+        self._adaptive_bit_probabilities = {}
+        self._adaptive_float_scores = {}
+        self._adaptive_float_probabilities = {}
+        self._adaptive_bit_epoch_uses = {}
+        self._adaptive_bit_epoch_successes = {}
+        self._adaptive_float_epoch_uses = {}
+        self._adaptive_float_epoch_successes = {}
+        self._adaptive_last_bit_epoch_uses = {}
+        self._adaptive_last_bit_epoch_successes = {}
+        self._adaptive_last_bit_instant_scores = {}
+        self._adaptive_last_float_epoch_uses = {}
+        self._adaptive_last_float_epoch_successes = {}
+        self._adaptive_last_float_instant_scores = {}
+
+        if not self.crossover_policy.is_adaptive:
+            return
+
+        initial_bit_probs = self._normalized_probabilities(
+            np.ones(len(self.crossover_policy.bit_candidates), dtype=float)
         )
-        probabilities /= probabilities.sum()
+        initial_float_probs = self._normalized_probabilities(
+            np.ones(len(self.crossover_policy.float_candidates), dtype=float)
+        )
+
+        for index, operator in enumerate(self.crossover_policy.bit_candidates):
+            self._adaptive_bit_scores[operator] = 0.5
+            self._adaptive_bit_probabilities[operator] = float(initial_bit_probs[index])
+            self._adaptive_bit_epoch_uses[operator] = 0
+            self._adaptive_bit_epoch_successes[operator] = 0
+            self._adaptive_last_bit_epoch_uses[operator] = 0
+            self._adaptive_last_bit_epoch_successes[operator] = 0
+            self._adaptive_last_bit_instant_scores[operator] = None
+
+        for index, operator in enumerate(self.crossover_policy.float_candidates):
+            self._adaptive_float_scores[operator] = 0.5
+            self._adaptive_float_probabilities[operator] = float(initial_float_probs[index])
+            self._adaptive_float_epoch_uses[operator] = 0
+            self._adaptive_float_epoch_successes[operator] = 0
+            self._adaptive_last_float_epoch_uses[operator] = 0
+            self._adaptive_last_float_epoch_successes[operator] = 0
+            self._adaptive_last_float_instant_scores[operator] = None
+
+    # ------------------------------------------------------------------
+    # Adaptive crossover: probability helpers
+    # ------------------------------------------------------------------
+
+    def _normalized_probabilities(self, weights: np.ndarray) -> np.ndarray:
+        probabilities = np.array(weights, dtype=float)
+        if probabilities.size == 0:
+            return probabilities
+
+        total = float(probabilities.sum())
+        if total <= 0.0:
+            probabilities = np.ones(probabilities.size, dtype=float) / probabilities.size
+        else:
+            probabilities /= total
 
         if self.crossover_policy.min_probability > 0.0:
             floor = self.crossover_policy.min_probability
-            probabilities = probabilities * (1.0 - len(candidates) * floor) + floor
+            probabilities = probabilities * (1.0 - probabilities.size * floor) + floor
 
+        probabilities /= probabilities.sum()
         return probabilities
+
+    def _adaptive_probabilities_from_scores(
+        self,
+        candidates: Sequence[TCrossoverOperator],
+        scores: dict[TCrossoverOperator, float],
+    ) -> np.ndarray:
+        return self._normalized_probabilities(
+            np.array([scores[candidate] for candidate in candidates], dtype=float)
+        )
+
+    @staticmethod
+    def _adaptive_instant_score(uses: int, successes: int) -> float:
+        return (successes + 1.0) / (uses + 2.0)
+
+    def _update_adaptive_operator_statistics(
+        self,
+        candidates: Sequence[TCrossoverOperator],
+        epoch_uses: dict[TCrossoverOperator, int],
+        epoch_successes: dict[TCrossoverOperator, int],
+        scores: dict[TCrossoverOperator, float],
+        probabilities: dict[TCrossoverOperator, float],
+        last_epoch_uses: dict[TCrossoverOperator, int],
+        last_epoch_successes: dict[TCrossoverOperator, int],
+        last_epoch_instant_scores: dict[TCrossoverOperator, Optional[float]],
+    ) -> None:
+        alpha = self.crossover_policy.alpha
+
+        for candidate in candidates:
+            uses = int(epoch_uses[candidate])
+            successes = int(epoch_successes[candidate])
+            last_epoch_uses[candidate] = uses
+            last_epoch_successes[candidate] = successes
+
+            if uses > 0:
+                instant_score = self._adaptive_instant_score(uses, successes)
+                scores[candidate] = (1.0 - alpha) * scores[candidate] + alpha * instant_score
+                last_epoch_instant_scores[candidate] = instant_score
+            else:
+                last_epoch_instant_scores[candidate] = None
+
+            epoch_uses[candidate] = 0
+            epoch_successes[candidate] = 0
+
+        updated_probabilities = self._adaptive_probabilities_from_scores(candidates, scores)
+        for index, candidate in enumerate(candidates):
+            probabilities[candidate] = float(updated_probabilities[index])
+
+    # ------------------------------------------------------------------
+    # Adaptive crossover: operator selection
+    # ------------------------------------------------------------------
 
     def _select_adaptive_operator(
         self,
-        candidates: Sequence[Union[CrossoverBitType, CrossoverFloatType]],
-        uses: dict[Union[CrossoverBitType, CrossoverFloatType], int],
-        successes: dict[Union[CrossoverBitType, CrossoverFloatType], int],
-    ) -> Union[CrossoverBitType, CrossoverFloatType]:
-        probabilities = self._adaptive_probabilities(candidates, uses, successes)
-        selected_index = int(np.random.choice(len(candidates), p=probabilities))
+        candidates: Sequence[TCrossoverOperator],
+        probabilities: dict[TCrossoverOperator, float],
+        epoch_uses: dict[TCrossoverOperator, int],
+    ) -> TCrossoverOperator:
+        distribution = np.array([probabilities[candidate] for candidate in candidates], dtype=float)
+        distribution /= distribution.sum()
+        selected_index = int(np.random.choice(len(candidates), p=distribution))
         operator = candidates[selected_index]
-        uses[operator] += 1
+        epoch_uses[operator] += 1
         return operator
 
     def _select_bit_crossover_operator(self) -> Optional[CrossoverBitType]:
@@ -195,8 +300,8 @@ class Tardigradas:
             return self.crossover_policy.bit
         return self._select_adaptive_operator(
             self.crossover_policy.bit_candidates,
-            self._adaptive_bit_uses,
-            self._adaptive_bit_successes,
+            self._adaptive_bit_probabilities,
+            self._adaptive_bit_epoch_uses,
         )
 
     def _select_float_crossover_operator(self) -> Optional[CrossoverFloatType]:
@@ -206,9 +311,13 @@ class Tardigradas:
             return self.crossover_policy.float
         return self._select_adaptive_operator(
             self.crossover_policy.float_candidates,
-            self._adaptive_float_uses,
-            self._adaptive_float_successes,
+            self._adaptive_float_probabilities,
+            self._adaptive_float_epoch_uses,
         )
+
+    # ------------------------------------------------------------------
+    # Crossover and mutation operators
+    # ------------------------------------------------------------------
 
     def _apply_bit_crossover(
         self,
@@ -254,6 +363,10 @@ class Tardigradas:
             )
         raise TardigradasException(f"unsupported float crossover operator: {operator}")
 
+    # ------------------------------------------------------------------
+    # Adaptive crossover: statistics update (called once per step)
+    # ------------------------------------------------------------------
+
     def _update_adaptive_crossover_statistics(self, elite_indices: np.ndarray) -> None:
         if not self.crossover_policy.is_adaptive:
             return
@@ -267,14 +380,135 @@ class Tardigradas:
 
             if index in elite_index_set and origin.get("source") == "crossover":
                 bit_operator = origin.get("bit_operator")
-                if bit_operator in self._adaptive_bit_successes:
-                    self._adaptive_bit_successes[bit_operator] += 1
+                if isinstance(bit_operator, CrossoverBitType) and bit_operator in self._adaptive_bit_epoch_successes:
+                    self._adaptive_bit_epoch_successes[bit_operator] += 1
 
                 float_operator = origin.get("float_operator")
-                if float_operator in self._adaptive_float_successes:
-                    self._adaptive_float_successes[float_operator] += 1
+                if isinstance(float_operator, CrossoverFloatType) and float_operator in self._adaptive_float_epoch_successes:
+                    self._adaptive_float_epoch_successes[float_operator] += 1
 
             origin["eligible_for_reward"] = False
+
+        self._update_adaptive_operator_statistics(
+            self.crossover_policy.bit_candidates,
+            self._adaptive_bit_epoch_uses,
+            self._adaptive_bit_epoch_successes,
+            self._adaptive_bit_scores,
+            self._adaptive_bit_probabilities,
+            self._adaptive_last_bit_epoch_uses,
+            self._adaptive_last_bit_epoch_successes,
+            self._adaptive_last_bit_instant_scores,
+        )
+        self._update_adaptive_operator_statistics(
+            self.crossover_policy.float_candidates,
+            self._adaptive_float_epoch_uses,
+            self._adaptive_float_epoch_successes,
+            self._adaptive_float_scores,
+            self._adaptive_float_probabilities,
+            self._adaptive_last_float_epoch_uses,
+            self._adaptive_last_float_epoch_successes,
+            self._adaptive_last_float_instant_scores,
+        )
+
+    # ------------------------------------------------------------------
+    # Adaptive crossover: reporting
+    # ------------------------------------------------------------------
+
+    def adaptive_crossover_state(self) -> dict[str, object]:
+        if not self.crossover_policy.is_adaptive:
+            return {
+                "mode": self.crossover_policy.mode,
+                "bit": self.crossover_policy.bit.name if self.crossover_policy.bit is not None else None,
+                "float": self.crossover_policy.float.name if self.crossover_policy.float is not None else None,
+            }
+
+        def build_operator_state(
+            candidates: CollectionSequence[TCrossoverOperator],
+            epoch_uses: dict[TCrossoverOperator, int],
+            epoch_successes: dict[TCrossoverOperator, int],
+            instant_scores: dict[TCrossoverOperator, Optional[float]],
+            scores: dict[TCrossoverOperator, float],
+            probabilities: dict[TCrossoverOperator, float],
+        ) -> tuple[
+            list[str],
+            dict[str, int],
+            dict[str, int],
+            dict[str, Optional[float]],
+            dict[str, float],
+            dict[str, float],
+        ]:
+            candidate_names = [candidate.name for candidate in candidates]
+            named_epoch_uses = {candidate.name: int(epoch_uses[candidate]) for candidate in candidates}
+            named_epoch_successes = {candidate.name: int(epoch_successes[candidate]) for candidate in candidates}
+            named_instant_scores = {
+                candidate.name: None if instant_scores[candidate] is None else float(instant_scores[candidate])
+                for candidate in candidates
+            }
+            named_scores = {candidate.name: float(scores[candidate]) for candidate in candidates}
+            named_probabilities = {candidate.name: float(probabilities[candidate]) for candidate in candidates}
+            return (
+                candidate_names,
+                named_epoch_uses,
+                named_epoch_successes,
+                named_instant_scores,
+                named_scores,
+                named_probabilities,
+            )
+
+        (
+            bit_candidates,
+            bit_epoch_uses,
+            bit_epoch_successes,
+            bit_instant_scores,
+            bit_scores,
+            bit_probabilities,
+        ) = build_operator_state(
+            self.crossover_policy.bit_candidates,
+            self._adaptive_last_bit_epoch_uses,
+            self._adaptive_last_bit_epoch_successes,
+            self._adaptive_last_bit_instant_scores,
+            self._adaptive_bit_scores,
+            self._adaptive_bit_probabilities,
+        )
+        (
+            float_candidates,
+            float_epoch_uses,
+            float_epoch_successes,
+            float_instant_scores,
+            float_scores,
+            float_probabilities,
+        ) = build_operator_state(
+            self.crossover_policy.float_candidates,
+            self._adaptive_last_float_epoch_uses,
+            self._adaptive_last_float_epoch_successes,
+            self._adaptive_last_float_instant_scores,
+            self._adaptive_float_scores,
+            self._adaptive_float_probabilities,
+        )
+
+        return {
+            "mode": self.crossover_policy.mode,
+            "reward": self.crossover_policy.reward,
+            "min_probability": self.crossover_policy.min_probability,
+            "period": self.crossover_policy.period,
+            "alpha": self.crossover_policy.alpha,
+            "bit_candidates": bit_candidates,
+            "float_candidates": float_candidates,
+            "bit_epoch_uses": bit_epoch_uses,
+            "bit_epoch_successes": bit_epoch_successes,
+            "bit_instant_scores": bit_instant_scores,
+            "bit_scores": bit_scores,
+            "bit_probabilities": bit_probabilities,
+            "float_epoch_uses": float_epoch_uses,
+            "float_epoch_successes": float_epoch_successes,
+            "float_instant_scores": float_instant_scores,
+            "float_scores": float_scores,
+            "float_probabilities": float_probabilities,
+        }
+
+    # ------------------------------------------------------------------
+    # Public helpers
+    # ------------------------------------------------------------------
 
     def show_progress(self, *_: object) -> bool:
         time = dt.datetime.now()
@@ -310,6 +544,10 @@ class Tardigradas:
                 return random_individual
 
         raise TardigradasException(f"can't create a new random chromosome in {n_attempts} attempts")
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
 
     def population_init(self) -> None:
         self._reset_crossover_runtime_state()
@@ -353,7 +591,7 @@ class Tardigradas:
                 self._apply_float_crossover(kid_chromo, parent1.chromo, parent2.chromo, float_operator)
 
             for i_int_gen in self.int_gene_indices:
-                kid_chromo[i_int_gen] = round(kid_chromo[i_int_gen])
+                kid_chromo[i_int_gen] = float(round(float(kid_chromo[i_int_gen])))
 
             kids.append(self.create_individual(chromo=kid_chromo))
 
@@ -437,6 +675,10 @@ class Tardigradas:
             else:
                 raise TardigradasException(f"can't replace duplicate chromosome in {n_attempts} attempts")
 
+    # ------------------------------------------------------------------
+    # Serialization delegation
+    # ------------------------------------------------------------------
+
     def state_dict(self) -> dict[str, object]:
         return state_dict(self)
 
@@ -448,6 +690,10 @@ class Tardigradas:
 
     def restore_from_file(self, file_name: str) -> None:
         restore_from_file(self, file_name)
+
+    # ------------------------------------------------------------------
+    # Evolution loop
+    # ------------------------------------------------------------------
 
     def step(self) -> None:
         if not self.population:

@@ -234,8 +234,8 @@ def test_adaptive_policy_rewards_only_elite_crossover_children() -> None:
 
     engine._update_adaptive_crossover_statistics(np.array([0], dtype=int))
 
-    assert engine._adaptive_bit_successes[CrossoverBitType.one_point] == 1
-    assert engine._adaptive_float_successes[CrossoverFloatType.arithmetic] == 1
+    assert engine._adaptive_last_bit_epoch_successes[CrossoverBitType.one_point] == 1
+    assert engine._adaptive_last_float_epoch_successes[CrossoverFloatType.arithmetic] == 1
     assert engine.population_origins[0]["eligible_for_reward"] is False
 
 
@@ -247,10 +247,16 @@ def test_adaptive_policy_biases_selection_towards_more_successful_operator(monke
             reward="elite_survival",
         ),
     )
-    engine._adaptive_bit_uses[CrossoverBitType.uniform] = 6
-    engine._adaptive_bit_successes[CrossoverBitType.uniform] = 0
-    engine._adaptive_bit_uses[CrossoverBitType.one_point] = 2
-    engine._adaptive_bit_successes[CrossoverBitType.one_point] = 2
+    # Set scores directly: uniform has low score, one_point has high score
+    engine._adaptive_bit_scores[CrossoverBitType.uniform] = 0.1
+    engine._adaptive_bit_scores[CrossoverBitType.one_point] = 0.9
+    # Recompute selection probabilities from the new scores
+    updated = engine._adaptive_probabilities_from_scores(
+        engine.crossover_policy.bit_candidates,
+        engine._adaptive_bit_scores,
+    )
+    for index, op in enumerate(engine.crossover_policy.bit_candidates):
+        engine._adaptive_bit_probabilities[op] = float(updated[index])
 
     captured: dict[str, np.ndarray] = {}
 

@@ -2,45 +2,15 @@ from __future__ import annotations
 
 import numpy as np
 
-from tardigradas import Problem, Tardigradas
-from tests.helpers import (
+from benchmarks.common import run_benchmark
+from benchmarks.problems import (
     AckleyProblem,
     OneMaxProblem,
     RastriginProblem,
     RosenbrockProblem,
     RoyalRoadProblem,
     SphereProblem,
-    create_engine,
 )
-
-
-def run_benchmark(
-    problem: type[Problem],
-    *,
-    population_size: int,
-    crossover_fraction: float,
-    gen_mutation_fraction: float,
-    n_elits: int,
-    max_iterations: int,
-    fresh_blood_fraction: float = 0.0,
-) -> tuple[Tardigradas, float]:
-    engine = create_engine(
-        problem=problem,
-        population_size=population_size,
-        crossover_fraction=crossover_fraction,
-        fresh_blood_fraction=fresh_blood_fraction,
-        gen_mutation_fraction=gen_mutation_fraction,
-        n_elits=n_elits,
-    )
-    engine.population_init()
-    engine.estimate_population()
-    initial_best_score = float(np.max(engine.scores))
-    engine.loop(
-        max_iterations=max_iterations,
-        epoch_without_improve=max_iterations,
-        loop_fun=lambda _: False,
-    )
-    return engine, initial_best_score
 
 
 def test_onemax_reaches_near_optimal_bitstring() -> None:
