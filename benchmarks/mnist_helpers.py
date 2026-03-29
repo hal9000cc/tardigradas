@@ -78,13 +78,6 @@ class MnistBenchmarkEnvironment:
         return self.parameter_slices[-1].stop
 
 
-def env_flag(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
 def resolve_mnist_root(data_root: str | Path | None = None) -> Path:
     if data_root is not None:
         return Path(data_root).expanduser().resolve()
@@ -193,45 +186,16 @@ def evaluate_model(
     )
 
 
-def get_mnist_benchmark_skip_reason(
-    *,
-    data_root: str | Path | None = None,
-    require_cuda: bool = True,
-    download: bool | None = None,
-) -> str | None:
-    if require_cuda and not torch.cuda.is_available():
-        return "MNIST benchmark requires a CUDA-capable PyTorch device"
-
-    root = resolve_mnist_root(data_root)
-    allow_download = env_flag("TARDIGRADAS_MNIST_DOWNLOAD") if download is None else download
-
-    if allow_download:
-        return None
-
-    try:
-        datasets.MNIST(root=str(root), train=True, download=False)
-        datasets.MNIST(root=str(root), train=False, download=False)
-    except RuntimeError:
-        return (
-            f"MNIST dataset was not found under {root}. "
-            "Set TARDIGRADAS_MNIST_DOWNLOAD=1 or point TARDIGRADAS_MNIST_ROOT to an existing dataset."
-        )
-
-    return None
-
-
 def create_mnist_environment(
     *,
     batch_size: int = DEFAULT_BATCH_SIZE,
     data_root: str | Path | None = None,
     require_cuda: bool = True,
-    download: bool | None = None,
 ) -> MnistBenchmarkEnvironment:
     if require_cuda and not torch.cuda.is_available():
         raise RuntimeError("MNIST benchmark requires a CUDA-capable PyTorch device")
 
     root = resolve_mnist_root(data_root)
-    allow_download = env_flag("TARDIGRADAS_MNIST_DOWNLOAD") if download is None else download
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     transform = transforms.Compose(
         [
@@ -240,8 +204,8 @@ def create_mnist_environment(
         ]
     )
 
-    train_dataset = datasets.MNIST(root=str(root), train=True, download=allow_download, transform=transform)
-    test_dataset = datasets.MNIST(root=str(root), train=False, download=allow_download, transform=transform)
+    train_dataset = datasets.MNIST(root=str(root), train=True, download=True, transform=transform)
+    test_dataset = datasets.MNIST(root=str(root), train=False, download=True, transform=transform)
 
     pin_memory = device.type == "cuda"
     train_loader = DataLoader(
@@ -276,7 +240,6 @@ def create_mnist_environment(
 class MnistFullTrainConvProblem(Problem):
     batch_size = DEFAULT_BATCH_SIZE
     data_root: str | Path | None = None
-    download: bool | None = None
     require_cuda = True
 
     @classmethod
@@ -286,7 +249,6 @@ class MnistFullTrainConvProblem(Problem):
                 batch_size=cls.batch_size,
                 data_root=cls.data_root,
                 require_cuda=cls.require_cuda,
-                download=cls.download,
             )
             return
 

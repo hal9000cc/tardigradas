@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable, Mapping
 from enum import Enum
 from time import perf_counter
@@ -14,6 +15,30 @@ ensure_project_paths()
 
 
 from tardigradas import CrossoverPolicy, Problem, Tardigradas
+
+
+class _FitnessEvaluationProgress:
+    def __init__(self) -> None:
+        self._last_width = 0
+
+    def __call__(self, engine: Tardigradas, progress: float) -> None:
+        total = len(engine.population)
+        if total <= 0:
+            return
+
+        evaluated = int(np.clip(np.floor(progress * total) + 1, 1, total))
+        message = f"evaluated: {evaluated}/{total}..."
+        self._last_width = max(self._last_width, len(message))
+        sys.stdout.write(f"\r{message}")
+        sys.stdout.flush()
+
+    def clear(self) -> None:
+        if self._last_width == 0:
+            return
+
+        sys.stdout.write("\r" + (" " * self._last_width) + "\r")
+        sys.stdout.flush()
+        self._last_width = 0
 
 
 def create_benchmark_engine(
@@ -60,25 +85,37 @@ def run_benchmark(
         n_elits=n_elits,
         crossover_policy=crossover_policy,
     )
+    progress = _FitnessEvaluationProgress()
+
     engine.population_init()
-    engine.estimate_population()
-    initial_best_score = float(np.max(engine.scores))
-    benchmark_started_at = perf_counter()
 
-    def log_epoch(current_engine: Tardigradas) -> bool:
-        if show_epoch_progress:
-            print_benchmark_epoch(
-                current_engine,
-                initial_best_score,
-                elapsed_time_seconds=perf_counter() - benchmark_started_at,
-            )
-        return False
+    try:
+        engine.fitness_progress_fun = progress
+        engine.estimate_population()
+        progress.clear()
+        initial_best_score = float(np.max(engine.scores))
+        benchmark_started_at = perf_counter()
 
-    engine.loop(
-        max_iterations=max_iterations,
-        epoch_without_improve=max_iterations,
-        loop_fun=log_epoch,
-    )
+        def log_epoch(current_engine: Tardigradas) -> bool:
+            progress.clear()
+            if show_epoch_progress:
+                print_benchmark_epoch(
+                    current_engine,
+                    initial_best_score,
+                    elapsed_time_seconds=perf_counter() - benchmark_started_at,
+                )
+            return False
+
+        engine.loop(
+            max_iterations=max_iterations,
+            epoch_without_improve=max_iterations,
+            loop_fun=log_epoch,
+            fitness_progress_fun=progress,
+        )
+    finally:
+        progress.clear()
+        engine.fitness_progress_fun = None
+
     return engine, initial_best_score
 
 

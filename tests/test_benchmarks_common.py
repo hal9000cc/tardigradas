@@ -82,6 +82,23 @@ def test_run_benchmark_prints_epoch_progress(capsys) -> None:
     assert "elapsed_time_sec:" in captured.out
 
 
+def test_run_benchmark_prints_single_line_fitness_progress(capsys) -> None:
+    run_benchmark(
+        OneMaxProblem,
+        population_size=12,
+        crossover_fraction=0.5,
+        gen_mutation_fraction=0.1,
+        n_elits=1,
+        max_iterations=1,
+        show_epoch_progress=False,
+    )
+
+    captured = capsys.readouterr()
+    assert "\revaluated: 1/12..." in captured.out
+    assert "\revaluated: 12/12..." in captured.out
+    assert ("\r" + (" " * len("evaluated: 12/12...")) + "\r") in captured.out
+
+
 def test_print_benchmark_epoch_includes_adaptive_policy_details(capsys) -> None:
     policy = CrossoverPolicy.adaptive(
         bit_candidates=[CrossoverBitType.uniform, CrossoverBitType.one_point],

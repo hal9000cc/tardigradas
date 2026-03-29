@@ -17,21 +17,19 @@ from benchmarks.mnist_helpers import (
     benchmark_environment,
     create_mnist_benchmark_engine,
     evaluate_best_individual_on_test_split,
-    get_mnist_benchmark_skip_reason,
     resolve_mnist_root,
 )
-from tardigradas import CrossoverBitType, CrossoverFloatType, CrossoverPolicy
+from tardigradas import CrossoverPolicy
 
 
-POPULATION_SIZE = 12
+POPULATION_SIZE = 50
 CROSSOVER_FRACTION = 0.6
 FRESH_BLOOD_FRACTION = 0.2
 GEN_MUTATION_FRACTION = 0.02
 N_ELITS = 2
-MAX_ITERATIONS = 4
+MAX_ITERATIONS = 1000
 BATCH_SIZE = DEFAULT_BATCH_SIZE
 DATA_ROOT: str | None = None
-DOWNLOAD: bool | None = None
 REQUIRE_CUDA = True
 CROSSOVER_POLICY = CrossoverPolicy.adaptive()
 
@@ -39,7 +37,6 @@ CROSSOVER_POLICY = CrossoverPolicy.adaptive()
 class ScriptMnistProblem(MnistFullTrainConvProblem):
     batch_size = BATCH_SIZE
     data_root = DATA_ROOT
-    download = DOWNLOAD
     require_cuda = REQUIRE_CUDA
 
 
@@ -54,19 +51,10 @@ def main() -> None:
         "max_iterations": MAX_ITERATIONS,
         "batch_size": BATCH_SIZE,
         "data_root": resolved_root,
-        "download": DOWNLOAD,
         "require_cuda": REQUIRE_CUDA,
         "crossover_policy": CROSSOVER_POLICY,
     }
     print_benchmark_configuration("MNIST", problem=ScriptMnistProblem, config=config)
-
-    skip_reason = get_mnist_benchmark_skip_reason(
-        data_root=DATA_ROOT,
-        require_cuda=REQUIRE_CUDA,
-        download=DOWNLOAD,
-    )
-    if skip_reason is not None:
-        raise SystemExit(skip_reason)
 
     engine, initial_best_score = run_benchmark(
         ScriptMnistProblem,
