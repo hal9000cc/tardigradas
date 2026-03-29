@@ -98,6 +98,7 @@ class Tardigradas:
         self.full_scores = np.zeros((0, 1), dtype=float)
         self.n_killed_doubles = 0
         self.population_origins: list[dict[str, object]] = []
+        self.step_population_origins: list[dict[str, object]] = []
         self._last_crossover_origins: list[dict[str, object]] = []
         self._last_mutation_origins: list[dict[str, object]] = []
         # EMA scores and selection probabilities
@@ -163,6 +164,7 @@ class Tardigradas:
 
     def _reset_crossover_runtime_state(self) -> None:
         self.population_origins = []
+        self.step_population_origins = []
         self._last_crossover_origins = []
         self._last_mutation_origins = []
         self._adaptive_bit_scores = {}
@@ -440,10 +442,10 @@ class Tardigradas:
             candidate_names = [candidate.name for candidate in candidates]
             named_epoch_uses = {candidate.name: int(epoch_uses[candidate]) for candidate in candidates}
             named_epoch_successes = {candidate.name: int(epoch_successes[candidate]) for candidate in candidates}
-            named_instant_scores = {
-                candidate.name: None if instant_scores[candidate] is None else float(instant_scores[candidate])
-                for candidate in candidates
-            }
+            named_instant_scores: dict[str, Optional[float]] = {}
+            for candidate in candidates:
+                instant_score = instant_scores[candidate]
+                named_instant_scores[candidate.name] = None if instant_score is None else float(instant_score)
             named_scores = {candidate.name: float(scores[candidate]) for candidate in candidates}
             named_probabilities = {candidate.name: float(probabilities[candidate]) for candidate in candidates}
             return (
@@ -565,6 +567,7 @@ class Tardigradas:
         self.fitness_progress_fun = None
         self.scores = np.zeros(0, dtype=float)
         self.full_scores = np.zeros((0, 1), dtype=float)
+        self.step_population_origins = []
 
     def crossover(self, parent_indices: np.ndarray) -> list[Individual]:
         kids: list[Individual] = []
@@ -701,6 +704,7 @@ class Tardigradas:
 
         self._ensure_population_origins()
         self.estimate_population()
+        self.step_population_origins = [self._clone_population_origin(origin) for origin in self.population_origins]
 
         n_generation_slots = self.population_size - self.n_elits
         n_crossover = int(np.floor(n_generation_slots * self.crossover_fraction))

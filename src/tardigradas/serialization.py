@@ -115,6 +115,7 @@ def restore_from_dict(engine: Any, state: dict[str, Any]) -> None:
 
     engine.full_scores = np.zeros((0, 1), dtype=float)
     engine.fitness_progress_fun = None
+    engine.step_population_origins = []
 
 
 def save_to_file(engine: Any, file_name: str) -> None:

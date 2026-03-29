@@ -14,7 +14,7 @@ from ._paths import ensure_project_paths
 ensure_project_paths()
 
 
-from tardigradas import CrossoverPolicy, Problem, Tardigradas
+from tardigradas import CrossoverPolicy, Problem, ProgressPanel, Tardigradas
 
 
 class _FitnessEvaluationProgress:
@@ -74,6 +74,7 @@ def run_benchmark(
     crossover_policy: CrossoverPolicy | None = None,
     engine_factory: Callable[..., Tardigradas] | None = None,
     show_epoch_progress: bool = True,
+    progress_panel: ProgressPanel | None = None,
 ) -> tuple[Tardigradas, float]:
     create_engine = create_benchmark_engine if engine_factory is None else engine_factory
     engine = create_engine(
@@ -95,6 +96,8 @@ def run_benchmark(
         progress.clear()
         initial_best_score = float(np.max(engine.scores))
         benchmark_started_at = perf_counter()
+        if progress_panel is not None:
+            progress_panel.capture_initial_state(engine)
 
         def log_epoch(current_engine: Tardigradas) -> bool:
             progress.clear()
@@ -104,6 +107,8 @@ def run_benchmark(
                     initial_best_score,
                     elapsed_time_seconds=perf_counter() - benchmark_started_at,
                 )
+            if progress_panel is not None:
+                progress_panel.update(current_engine)
             return False
 
         engine.loop(

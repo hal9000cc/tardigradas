@@ -30,6 +30,12 @@
 pip install -e .
 ```
 
+Для использования встроенной панели графиков с `matplotlib`:
+
+```bash
+pip install -e .[plot]
+```
+
 ## Структура проекта
 
 - `src/tardigradas/__init__.py` — публичный API пакета;
@@ -245,6 +251,40 @@ policy = CrossoverPolicy.adaptive(
 - `best_iteration` — номер итерации лучшего результата;
 - `best_individual` — лучшая найденная особь;
 - `step_best_individual` — лучшая особь текущего шага.
+
+## Встроенная панель графиков прогресса
+
+Если установлен optional extra `plot`, библиотека может показывать live-панель прогресса через `matplotlib`.
+
+Панель отображает:
+
+- `best_score`, `step_score`, `population_mean_score`, `population_max_score`;
+- `score_improvement`, `killed_doubles`, `elapsed_time_sec`;
+- bar chart текущей популяции, отсортированной по убыванию score, с цветами по происхождению особей;
+- adaptive probabilities операторов кроссовера, если включена adaptive policy.
+
+Пример использования:
+
+```python
+from tardigradas import Tardigradas, create_progress_panel
+
+
+engine = Tardigradas(problem=SphereProblem, population_size=50)
+engine.population_init()
+engine.estimate_population()
+
+panel = create_progress_panel(title="Sphere progress")
+panel.capture_initial_state(engine)
+
+engine.loop(
+    max_iterations=100,
+    loop_fun=panel.loop_callback(),
+)
+
+panel.show(block=True)
+```
+
+Если `matplotlib` недоступен, `create_progress_panel()` всё равно вернёт helper-объект, но он будет просто собирать history без отрисовки окна.
 
 ### Сохранение состояния
 

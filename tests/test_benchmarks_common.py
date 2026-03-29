@@ -4,7 +4,7 @@ import numpy as np
 
 from benchmarks.common import print_benchmark_configuration, print_benchmark_epoch, run_benchmark
 from benchmarks.problems import OneMaxProblem
-from tardigradas import CrossoverBitType, CrossoverFloatType, CrossoverPolicy
+from tardigradas import CrossoverBitType, CrossoverFloatType, CrossoverPolicy, create_progress_panel
 from tests.helpers import DummyProblem, create_engine
 
 
@@ -97,6 +97,25 @@ def test_run_benchmark_prints_single_line_fitness_progress(capsys) -> None:
     assert "\revaluated: 1/12..." in captured.out
     assert "\revaluated: 12/12..." in captured.out
     assert ("\r" + (" " * len("evaluated: 12/12...")) + "\r") in captured.out
+
+
+def test_run_benchmark_updates_progress_panel_history() -> None:
+    panel = create_progress_panel(prefer_matplotlib=False)
+
+    _, initial_best_score = run_benchmark(
+        OneMaxProblem,
+        population_size=12,
+        crossover_fraction=0.5,
+        gen_mutation_fraction=0.1,
+        n_elits=1,
+        max_iterations=2,
+        show_epoch_progress=False,
+        progress_panel=panel,
+    )
+
+    assert panel.initial_best_score == initial_best_score
+    assert len(panel.history) == 2
+    assert panel.history[-1].iteration == 2
 
 
 def test_print_benchmark_epoch_includes_adaptive_policy_details(capsys) -> None:
