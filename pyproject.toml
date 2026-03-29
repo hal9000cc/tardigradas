@@ -26,3 +26,7 @@ where = ["src"]
 [tool.pytest.ini_options]
 addopts = "-ra"
 testpaths = ["tests"]
+markers = [
+    "slow: marks long-running benchmark-style tests",
+    "gpu: marks tests that expect a CUDA-capable device",
+]

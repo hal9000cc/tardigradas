@@ -19,3 +19,4 @@ ENV/
 env/
 .clinerules
 .memory_bank/
+.data/

@@ -193,3 +193,36 @@ ga.restore_from_file("state.pkl")
 - добавить автоматические тесты;
 - добавить отдельные примеры использования;
 - при необходимости сделать стратегии кроссовера и мутации конфигурируемыми на уровне API.
+
+## Опциональный MNIST benchmark с PyTorch
+
+В тестовом контуре добавлен отдельный benchmark для сценария, где `Tardigradas` оптимизирует веса компактной сверточной сети на полном train split MNIST и затем валидирует лучшую особь на test split.
+
+Особенности сценария:
+
+- реализация находится в `tests/mnist_helpers.py` и `tests/test_engine_mnist_benchmark.py`;
+- используется компактная CNN с двумя сверточными слоями и глобальным pooling;
+- все веса сети кодируются в плоскую хромосому `float`-генов;
+- primary fitness — отрицательная cross-entropy на полном train split;
+- benchmark помечен как `slow` и `gpu`;
+- benchmark не запускается по умолчанию и требует явного opt-in через переменную окружения.
+
+### Требования
+
+- в интерпретаторе тестов должны быть установлены `torch` и `torchvision`;
+- по умолчанию ожидается CUDA-совместимое устройство;
+- набор данных MNIST должен быть доступен локально, либо нужно разрешить его скачивание.
+
+### Полезные переменные окружения
+
+- `TARDIGRADAS_RUN_MNIST_BENCHMARK=1` — разрешить запуск benchmark;
+- `TARDIGRADAS_MNIST_ROOT=/path/to/mnist` — указать каталог с MNIST;
+- `TARDIGRADAS_MNIST_DOWNLOAD=1` — разрешить `torchvision` скачать датасет, если его нет локально.
+
+### Ручной запуск
+
+```bash
+TARDIGRADAS_RUN_MNIST_BENCHMARK=1 python -m pytest tests/test_engine_mnist_benchmark.py -m "slow and gpu" -q
+```
+
+В рамках обычного `pytest`-прогона этот benchmark будет пропущен, пока не установлен `TARDIGRADAS_RUN_MNIST_BENCHMARK=1`.

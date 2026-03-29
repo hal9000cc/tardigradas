@@ -20,6 +20,14 @@ from tests.helpers import DefaultsProblem, DummyProblem, create_engine
 @pytest.fixture(autouse=True)
 def fixed_seed() -> None:
     np.random.seed(12345)
+    try:
+        import torch
+    except ImportError:
+        return
+
+    torch.manual_seed(12345)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(12345)
 
 
 @pytest.fixture
