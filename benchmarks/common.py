@@ -17,6 +17,9 @@ ensure_project_paths()
 from tardigradas import CrossoverPolicy, Problem, ProgressPanel, Tardigradas
 
 
+MAX_PRINTED_CHROMOSOME_SIZE = 100
+
+
 class _FitnessEvaluationProgress:
     def __init__(self) -> None:
         self._last_width = 0
@@ -258,10 +261,17 @@ def print_benchmark_summary(
     print(f"  - killed_doubles: {engine.n_killed_doubles}")
 
     if show_best_chromosome and engine.best_individual is not None:
-        print(
-            "  - best_chromosome: "
-            f"{np.array2string(engine.best_individual.chromo, precision=6, separator=', ')}"
-        )
+        chromo_size = len(engine.best_individual.chromo)
+        if chromo_size <= MAX_PRINTED_CHROMOSOME_SIZE:
+            print(
+                "  - best_chromosome: "
+                f"{np.array2string(engine.best_individual.chromo, precision=6, separator=', ')}"
+            )
+        else:
+            print(
+                "  - best_chromosome: "
+                f"skipped (length={chromo_size} > {MAX_PRINTED_CHROMOSOME_SIZE})"
+            )
 
     if extra_metrics is None:
         return

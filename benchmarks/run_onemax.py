@@ -14,6 +14,7 @@ from benchmarks.problems import OneMaxProblem
 from tardigradas import CrossoverBitType, CrossoverFloatType, CrossoverPolicy, create_progress_panel
 
 
+CHROMO_SIZE = 24
 POPULATION_SIZE = 40
 CROSSOVER_FRACTION = 0.6
 FRESH_BLOOD_FRACTION = 0.0
@@ -27,9 +28,14 @@ CROSSOVER_POLICY = CrossoverPolicy.explicit(
 SHOW_PROGRESS_PANEL = True
 
 
+class ConfiguredOneMaxProblem(OneMaxProblem):
+    n_bits = CHROMO_SIZE
+
+
 def main() -> None:
     progress_panel = create_progress_panel(title="OneMax progress") if SHOW_PROGRESS_PANEL else None
     config = {
+        "chromo_size": CHROMO_SIZE,
         "population_size": POPULATION_SIZE,
         "crossover_fraction": CROSSOVER_FRACTION,
         "fresh_blood_fraction": FRESH_BLOOD_FRACTION,
@@ -38,9 +44,9 @@ def main() -> None:
         "max_iterations": MAX_ITERATIONS,
         "crossover_policy": CROSSOVER_POLICY,
     }
-    print_benchmark_configuration("OneMax", problem=OneMaxProblem, config=config)
+    print_benchmark_configuration("OneMax", problem=ConfiguredOneMaxProblem, config=config)
     engine, initial_best_score = run_benchmark(
-        OneMaxProblem,
+        ConfiguredOneMaxProblem,
         population_size=POPULATION_SIZE,
         crossover_fraction=CROSSOVER_FRACTION,
         fresh_blood_fraction=FRESH_BLOOD_FRACTION,

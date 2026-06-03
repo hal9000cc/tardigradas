@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from benchmarks.common import print_benchmark_configuration, print_benchmark_epoch, run_benchmark
+from benchmarks.common import print_benchmark_configuration, print_benchmark_epoch, print_benchmark_summary, run_benchmark
 from benchmarks.problems import OneMaxProblem
 from tardigradas import CrossoverBitType, CrossoverFloatType, CrossoverPolicy, create_progress_panel
 from tests.helpers import DummyProblem, create_engine
@@ -158,3 +158,33 @@ def test_print_benchmark_epoch_includes_adaptive_policy_details(capsys) -> None:
     assert "adaptive_float_epoch_uses: {uniform: 2, arithmetic: 2}" in captured.out
     assert "adaptive_float_epoch_successes: {uniform: 1, arithmetic: 0}" in captured.out
     assert "adaptive_float_probabilities:" in captured.out
+
+
+def test_print_benchmark_summary_prints_short_best_chromosome(capsys) -> None:
+    engine = create_engine(problem=OneMaxProblem)
+    engine.best_individual = engine.create_individual(chromo=[1.0] * OneMaxProblem.n_bits)
+    engine.best_score = float(OneMaxProblem.n_bits)
+    engine.best_iteration = 3
+    engine.iterations = 4
+
+    print_benchmark_summary(engine, initial_best_score=10.0)
+
+    captured = capsys.readouterr()
+    assert "best_chromosome:" in captured.out
+    assert "[1., 1., 1." in captured.out
+
+
+def test_print_benchmark_summary_skips_long_best_chromosome(capsys) -> None:
+    class LongOneMaxProblem(OneMaxProblem):
+        n_bits = 101
+
+    engine = create_engine(problem=LongOneMaxProblem)
+    engine.best_individual = engine.create_individual(chromo=[1.0] * LongOneMaxProblem.n_bits)
+    engine.best_score = float(LongOneMaxProblem.n_bits)
+    engine.best_iteration = 5
+    engine.iterations = 6
+
+    print_benchmark_summary(engine, initial_best_score=20.0)
+
+    captured = capsys.readouterr()
+    assert "best_chromosome: skipped (length=101 > 100)" in captured.out
