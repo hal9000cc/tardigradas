@@ -20,9 +20,10 @@
 - поддерживает кастомные hooks кроссовера для полной замены стандартной логики или только для родителей разной длины;
 - позволяет явно выбирать разные операторы кроссовера для `bit` и `float`/`int` генов;
 - поддерживает adaptive-выбор операторов кроссовера по статистике успеха;
+- поддерживает опциональную параллельную оценку fitness через isolated subprocess;
 - добавляет «свежую кровь» в популяцию;
 - удаляет дубликаты;
-- сохраняет и восстанавливает состояние поиска через `pickle`.
+- сохраняет и восстанавливает состояние поиска через `pickle`, включая незавершенную оценку популяции.
 
 Ограничения:
 
@@ -51,6 +52,8 @@ pip install -e .[plot]
 - `src/tardigradas/individual.py` — объект отдельной особи;
 - `src/tardigradas/schema.py` — dataclass `ChromosomeSchema`;
 - `src/tardigradas/crossover_policy.py` — конфигурация explicit/adaptive политик кроссовера;
+- `src/tardigradas/evaluation.py` — последовательная и subprocess-оценка fitness;
+- `src/tardigradas/_evaluation_worker.py` — внутренний entrypoint isolated subprocess worker;
 - `src/tardigradas/operators/` — селекция, кроссовер и мутация;
 - `src/tardigradas/serialization.py` — сериализация состояния;
 - `src/tardigradas/gen_types.py` — перечисления типов генов и стратегий кроссовера.
@@ -133,6 +136,7 @@ from tardigradas import (
     CrossoverBitType,
     CrossoverFloatType,
     CrossoverPolicy,
+    EvaluationConfig,
     GenType,
     Individual,
     Problem,
@@ -195,7 +199,63 @@ print("Лучшая особь:", ga.best_individual.chromo)
 - `gen_mutation_fraction` — интенсивность мутации;
 - `fitness_environment` — произвольное внешнее окружение;
 - `n_elits` — число элитных особей;
-- `crossover_policy` — explicit/adaptive политика выбора операторов кроссовера.
+- `crossover_policy` — explicit/adaptive политика выбора операторов кроссовера;
+- `evaluation` — опциональная конфигурация оценки fitness, например `EvaluationConfig(workers=4)`.
+
+## Параллельная оценка fitness
+
+По умолчанию библиотека использует прежний последовательный режим: fitness считается прямым циклом в основном процессе, без subprocess и без дополнительных накладных расходов.
+
+Чтобы включить параллельность, передайте `EvaluationConfig` в конструктор:
+
+```python
+from tardigradas import EvaluationConfig, Tardigradas
+
+
+engine = Tardigradas(
+    problem=MyProblem,
+    population_size=100,
+    evaluation=EvaluationConfig(
+        workers=4,
+        max_attempts=3,
+    ),
+)
+```
+
+Параметры:
+
+- `workers` — максимальное число одновременно запущенных isolated subprocess;
+- `max_attempts` — число попыток расчета одной особи, по умолчанию `3`.
+
+Scheduler работает динамически: он поддерживает до `workers` активных расчетов, а когда один subprocess завершается, сразу запускает следующий pending-расчет. Это важно для задач, где разные особи считаются разное время.
+
+### Контекст оценки
+
+Сигнатура `Problem.fitness(individual)` не меняется. В subprocess mode библиотека добавляет к особи контекст:
+
+```python
+context = individual.evaluation_context
+```
+
+Если контекст доступен, в нем есть:
+
+- `generation` — номер поколения;
+- `individual_index` — индекс особи в текущей популяции;
+- `attempt` — номер попытки расчета.
+
+Это позволяет пользовательскому коду продолжить собственный расчет по `(generation, individual_index)`, если такая логика реализована вне библиотеки.
+
+### Требования subprocess mode
+
+Для isolated subprocess backend класс `Problem` должен быть импортируемым по module path. То есть класс должен быть объявлен в модуле, доступном дочернему Python-процессу, а не локально внутри функции и не в `__main__`.
+
+Subprocess получает только хромосому и служебный контекст оценки. Библиотека не сохраняет и не передает пользовательское воплощение особи, модели, датасеты или внешние runtime-артефакты. Если для fitness нужно внешнее состояние, его должен подготовить пользовательский код, например в `Problem.init_environment()` внутри worker-процесса.
+
+### Ошибки и retry
+
+Если subprocess упал или `fitness()` выбросил исключение, расчет особи повторяется до `max_attempts`. Если все попытки исчерпаны, scheduler продолжает считать остальные особи. После завершения всех возможных расчетов эпоха останавливается с `IncompleteEpochError`, где `missing_indices` содержит индексы недосчитанных особей.
+
+При `IncompleteEpochError` новое поколение не создается, `iterations` не увеличивается, а in-progress состояние оценки остается в движке.
 
 ## Настройка кроссоверов
 
@@ -373,6 +433,35 @@ panel.show(block=True)
 ga.save_to_file("state.pkl")
 ga.restore_from_file("state.pkl")
 ```
+
+Сохранение остается под управлением вызывающего кода. Библиотека не пишет checkpoint-файлы автоматически, но `state_dict()` и `save_to_file()` сохраняют in-progress состояние оценки популяции, если оно есть.
+
+Например, можно сохранять состояние по progress callback:
+
+```python
+def save_progress(engine, progress):
+    engine.save_to_file("state.pkl")
+
+
+engine.loop(
+    max_iterations=100,
+    fitness_progress_fun=save_progress,
+)
+```
+
+После восстановления:
+
+```python
+engine = Tardigradas(
+    problem=MyProblem,
+    population_size=100,
+    evaluation=EvaluationConfig(workers=4),
+)
+engine.restore_from_file("state.pkl")
+engine.loop(max_iterations=100)
+```
+
+Если в сохраненном состоянии была незавершенная оценка текущей популяции, движок сверит поколение и signatures хромосом, использует уже сохраненные fitness-результаты и запустит только отсутствующие расчеты.
 
 ## Что улучшено в архитектуре
 

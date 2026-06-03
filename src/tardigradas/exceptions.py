@@ -11,4 +11,10 @@ class TardigradasException(Exception):
         return self.__class__.__name__
 
 
+class IncompleteEpochError(TardigradasException):
+    def __init__(self, missing_indices: list[int]) -> None:
+        self.missing_indices = [int(index) for index in missing_indices]
+        super().__init__(f"incomplete population fitness evaluation: missing indices {self.missing_indices}")
+
+
 TradigradasException = TardigradasException

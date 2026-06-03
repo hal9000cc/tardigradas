@@ -8,6 +8,7 @@ from .gen_types import GenType
 
 if TYPE_CHECKING:
     from .engine import Tardigradas
+    from .evaluation import EvaluationContext
 
 
 ChromoInput = Union[Sequence[float], np.ndarray]
@@ -21,6 +22,7 @@ class Individual:
         use_defaults: bool = False,
     ) -> None:
         self.tardigradas = tardigradas
+        self.evaluation_context: EvaluationContext | None = None
 
         if chromo is None:
             self.chromo_new(use_defaults=use_defaults)
@@ -88,13 +90,9 @@ class Individual:
 
     def fitness(self) -> np.ndarray:
         raw_score = self.tardigradas.problem.fitness(self)
-        if np.isscalar(raw_score):
-            return np.asarray([raw_score], dtype=float).reshape(-1)
+        from .evaluation import normalize_fitness_score
 
-        scores = np.array(raw_score, dtype=float).reshape(-1)
-        if scores.size == 0:
-            raise ValueError("fitness must return at least one numeric value")
-        return scores
+        return normalize_fitness_score(raw_score)
 
     def chromo_valid(self) -> bool:
         return bool(self.tardigradas.problem.chromo_valid(self))

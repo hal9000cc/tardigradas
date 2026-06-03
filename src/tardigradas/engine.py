@@ -8,6 +8,7 @@ from typing import Callable, Optional, Sequence, TypeVar, Union
 import numpy as np
 
 from .crossover_policy import CrossoverPolicy
+from .evaluation import EvaluationConfig, estimate_population
 from .exceptions import TardigradasException
 from .gen_types import CrossoverBitType, CrossoverFloatType, GenType
 from .individual import Individual
@@ -40,6 +41,7 @@ class Tardigradas:
         fitness_environment: Optional[object] = None,
         n_elits: Optional[int] = None,
         crossover_policy: Optional[CrossoverPolicy] = None,
+        evaluation: Optional[EvaluationConfig] = None,
     ) -> None:
         if not issubclass(problem, Problem):
             raise TypeError("problem must be a Problem subclass")
@@ -60,6 +62,9 @@ class Tardigradas:
         if crossover_policy is not None and not isinstance(crossover_policy, CrossoverPolicy):
             raise TypeError("crossover_policy must be CrossoverPolicy or None")
         self.crossover_policy = CrossoverPolicy.default() if crossover_policy is None else crossover_policy
+        if evaluation is not None and not isinstance(evaluation, EvaluationConfig):
+            raise TypeError("evaluation must be EvaluationConfig or None")
+        self.evaluation = evaluation
 
         if self.n_elits < 0 or self.n_elits >= self.population_size:
             raise ValueError("n_elits must be in range [0, population_size)")
@@ -104,6 +109,7 @@ class Tardigradas:
         self.scores = np.zeros(0, dtype=float)
         self.full_scores = np.zeros((0, 1), dtype=float)
         self.n_killed_doubles = 0
+        self.evaluation_state: Optional[dict[str, object]] = None
         self.population_origins: list[dict[str, object]] = []
         self.step_population_origins: list[dict[str, object]] = []
         self._last_crossover_origins: list[dict[str, object]] = []
@@ -172,6 +178,7 @@ class Tardigradas:
     def _reset_crossover_runtime_state(self) -> None:
         self.population_origins = []
         self.step_population_origins = []
+        self.evaluation_state = None
         self._last_crossover_origins = []
         self._last_mutation_origins = []
         self._adaptive_bit_scores = {}
@@ -763,14 +770,7 @@ class Tardigradas:
         return kids
 
     def estimate_population(self) -> None:
-        scores = []
-        for i, individual in enumerate(self.population):
-            scores.append(individual.fitness())
-            if self.fitness_progress_fun:
-                self.fitness_progress_fun(self, i / self.population_size)
-
-        self.full_scores = np.vstack(scores)
-        self.scores = self.full_scores[:, 0]
+        estimate_population(self, self.evaluation)
 
     def kill_doubles(self) -> None:
         self.n_killed_doubles = 0

@@ -10,7 +10,7 @@ from benchmarks.problems import (
     RoyalRoadProblem,
     SphereProblem,
 )
-from tardigradas import ChromosomeSchema, CrossoverPolicy, GenType, Individual, Problem, Tardigradas
+from tardigradas import ChromosomeSchema, CrossoverPolicy, EvaluationConfig, GenType, Individual, Problem, Tardigradas
 
 
 def build_dummy_schema(
@@ -181,6 +181,7 @@ def create_engine(
     gen_mutation_fraction: float = 0.25,
     n_elits: int = 1,
     crossover_policy: CrossoverPolicy | None = None,
+    evaluation: EvaluationConfig | None = None,
 ) -> Tardigradas:
     return Tardigradas(
         problem=problem,
@@ -190,4 +191,5 @@ def create_engine(
         gen_mutation_fraction=gen_mutation_fraction,
         n_elits=n_elits,
         crossover_policy=crossover_policy,
+        evaluation=evaluation,
     )

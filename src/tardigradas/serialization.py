@@ -41,6 +41,7 @@ def state_dict(engine: Any) -> dict[str, Any]:
         "best_individual": best_individual,
         "step_best_individual": step_best_individual,
         "population": [individual.chromo for individual in engine.population],
+        "evaluation_state": getattr(engine, "evaluation_state", None),
         "population_origins": [dict(origin) for origin in getattr(engine, "population_origins", [])],
         "crossover_policy": getattr(engine, "crossover_policy", None),
         # EMA scores and probabilities
@@ -80,6 +81,7 @@ def restore_from_dict(engine: Any, state: dict[str, Any]) -> None:
     engine.best_score = state.get("best_score")
     engine.best_iteration = int(state.get("best_iteration", 0))
     engine.crossover_policy = state.get("crossover_policy", engine.crossover_policy)
+    evaluation_state = state.get("evaluation_state")
 
     population = state.get("population", [])
     engine.population = [engine.create_individual(chromo=chromo) for chromo in population]
@@ -93,6 +95,7 @@ def restore_from_dict(engine: Any, state: dict[str, Any]) -> None:
     )
 
     engine._reset_crossover_runtime_state()
+    engine.evaluation_state = evaluation_state
     restored_origins = state.get("population_origins")
     if restored_origins is None:
         engine.population_origins = [engine._default_population_origin("restored") for _ in engine.population]
