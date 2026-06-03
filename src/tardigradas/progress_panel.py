@@ -27,6 +27,7 @@ class PopulationBarEntry:
     score: float
     source: str
     color: str
+    custom_score: float | None = None
 
 
 @dataclass(frozen=True)
@@ -94,10 +95,21 @@ def _build_population_bars(engine: Tardigradas) -> tuple[PopulationBarEntry, ...
         return ()
 
     origins = _score_aligned_origins(engine)
+    full_scores = np.asarray(getattr(engine, "full_scores", np.zeros((0, 1), dtype=float)), dtype=float)
+    custom_scores_available = (
+        full_scores.ndim == 2
+        and full_scores.shape[0] == int(engine.scores.size)
+        and full_scores.shape[1] >= 2
+    )
     order = np.argsort(-engine.scores)
     bars: list[PopulationBarEntry] = []
 
     for rank, index in enumerate(order, start=1):
+        custom_score: float | None = None
+        if custom_scores_available:
+            custom_score_value = float(full_scores[int(index), 1])
+            if not np.isnan(custom_score_value):
+                custom_score = custom_score_value
         source = _population_source(origins[int(index)])
         bars.append(
             PopulationBarEntry(
@@ -105,6 +117,7 @@ def _build_population_bars(engine: Tardigradas) -> tuple[PopulationBarEntry, ...
                 score=float(engine.scores[int(index)]),
                 source=source,
                 color=SOURCE_COLORS.get(source, FALLBACK_SOURCE_COLOR),
+                custom_score=custom_score,
             )
         )
 

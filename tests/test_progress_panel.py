@@ -25,6 +25,12 @@ def test_progress_panel_builds_sorted_population_bars_with_origin_colors() -> No
     engine.iterations = 3
     engine.best_score = 2.0
     engine.scores = np.array([0.5, 2.0, 1.25, 1.75], dtype=float)
+    engine.full_scores = np.array([
+        [0.5, -0.5],
+        [2.0, 0.25],
+        [1.25, 0.75],
+        [1.75, 0.5],
+    ], dtype=float)
     engine.step_custom_score = np.array([2.0, 0.25], dtype=float)
     engine.n_killed_doubles = 2
     engine.step_population_origins = [
@@ -49,6 +55,7 @@ def test_progress_panel_builds_sorted_population_bars_with_origin_colors() -> No
     assert [bar.source for bar in snapshot.population_bars] == ["elite", "crossover", "mutation", "fresh"]
     assert [bar.color for bar in snapshot.population_bars] == ["red", "green", "yellow", "blue"]
     assert [bar.score for bar in snapshot.population_bars] == [2.0, 1.75, 1.25, 0.5]
+    assert [bar.custom_score for bar in snapshot.population_bars] == [0.25, 0.5, 0.75, -0.5]
 
 
 def test_progress_panel_omits_custom_score_when_fitness_has_single_component() -> None:
