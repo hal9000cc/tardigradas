@@ -8,6 +8,7 @@ from typing import Any
 
 from .engine import Tardigradas
 from .evaluation import EvaluationContext, normalize_fitness_score
+from .exceptions import EvaluationFailure
 
 
 def _resolve_qualified_name(module_name: str, qualified_name: str) -> Any:
@@ -51,8 +52,30 @@ def main(argv: list[str] | None = None) -> int:
         with response_path.open("wb") as file:
             pickle.dump(response, file)
         return 0
-    except Exception:
-        response = {"ok": False}
+    except EvaluationFailure as exc:
+        response = {
+            "ok": False,
+            "failure_mode": "transient" if exc.retryable else "permanent",
+            "retryable": bool(exc.retryable),
+            "failure_kind": exc.failure_kind,
+            "error_type": type(exc).__name__,
+            "error_message": exc.error_message if exc.error_message is not None else str(exc),
+            "error_repr": repr(exc),
+            "details": exc.details,
+        }
+        with response_path.open("wb") as file:
+            pickle.dump(response, file)
+        return 1
+    except Exception as exc:
+        response = {
+            "ok": False,
+            "failure_mode": "exception",
+            "retryable": False,
+            "failure_kind": "exception",
+            "error_type": type(exc).__name__,
+            "error_message": str(exc),
+            "error_repr": repr(exc),
+        }
         with response_path.open("wb") as file:
             pickle.dump(response, file)
         return 1

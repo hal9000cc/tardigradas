@@ -1,7 +1,14 @@
 from .crossover_policy import CrossoverPolicy
 from .engine import Tardigradas
 from .evaluation import EvaluationConfig, EvaluationContext
-from .exceptions import IncompleteEpochError, TardigradasException, TradigradasException
+from .exceptions import (
+    EvaluationFailure,
+    IncompleteEpochError,
+    PermanentEvaluationError,
+    TardigradasException,
+    TradigradasException,
+    TransientEvaluationError,
+)
 from .gen_types import CrossoverBitType, CrossoverFloatType, GenType
 from .individual import Individual
 from .problem import Problem
@@ -14,6 +21,7 @@ __all__ = [
     "CrossoverBitType",
     "CrossoverFloatType",
     "EvaluationConfig",
+    "EvaluationFailure",
     "EvaluationContext",
     "GenType",
     "IncompleteEpochError",
@@ -21,8 +29,10 @@ __all__ = [
     "Problem",
     "ProgressPanel",
     "ProgressSnapshot",
+    "PermanentEvaluationError",
     "Tardigradas",
     "TardigradasException",
     "TradigradasException",
+    "TransientEvaluationError",
     "create_progress_panel",
 ]

@@ -139,8 +139,10 @@ from tardigradas import (
     EvaluationConfig,
     GenType,
     Individual,
+    PermanentEvaluationError,
     Problem,
     Tardigradas,
+    TransientEvaluationError,
 )
 
 
@@ -253,7 +255,49 @@ Subprocess получает только хромосому и служебны�
 
 ### Ошибки и retry
 
-Если subprocess упал или `fitness()` выбросил исключение, расчет особи повторяется до `max_attempts`. Если все попытки исчерпаны, scheduler продолжает считать остальные особи. После завершения всех возможных расчетов эпоха останавливается с `IncompleteEpochError`, где `missing_indices` содержит индексы недосчитанных особей.
+Если subprocess упал или `fitness()` выбросил обычное исключение, расчет особи повторяется до `max_attempts`. Если все попытки исчерпаны, scheduler продолжает считать остальные особи. После завершения всех возможных расчетов эпоха останавливается с `IncompleteEpochError`, где `missing_indices` содержит индексы недосчитанных особей.
+
+Для явного управления ошибками `fitness()` может бросить typed exceptions из публичного API библиотеки:
+
+```python
+from tardigradas import PermanentEvaluationError, TransientEvaluationError
+
+
+class MyProblem(Problem):
+    @staticmethod
+    def fitness(individual):
+        try:
+            return run_expensive_fitness(individual)
+        except BackendTemporarilyUnavailable as exc:
+            raise TransientEvaluationError(
+                "backend_temporarily_unavailable",
+                message=str(exc),
+                details={"backend": "gpu-0"},
+            ) from exc
+        except InvalidInputForBackend as exc:
+            raise PermanentEvaluationError(
+                "invalid_individual",
+                message=str(exc),
+            ) from exc
+```
+
+`tardigradas` не использует эвристики по тексту исключений и не знает о конкретных backend'ах. Решение о том, transient это ошибка или permanent, принимает пользовательский код внутри `fitness()`.
+
+Семантика typed exceptions:
+
+- `TransientEvaluationError` — временная ошибка. В subprocess mode с `workers > 1` особь временно попадает в `deferred_indices` и повторяется после завершения других расчетов. Эти попытки увеличивают `EvaluationContext.attempt`, но не тратят final retry budget. Когда все остальные расчеты завершены и остаются только unresolved transient-особи, scheduler переходит в final phase и применяет `max_attempts` к `final_attempts`. Если transient-особь продолжает падать в final phase, она становится missing и эпоха завершается через `IncompleteEpochError`.
+- `PermanentEvaluationError` — явная окончательная ошибка fitness для данной особи. Такая особь сразу попадает в `missing_indices`, без retry и без `max_attempts`.
+- обычный `Exception` — совместимое старое поведение: retry до `max_attempts`, затем `missing_indices`.
+
+Во время незавершенной оценки `engine.evaluation_state` содержит диагностические поля:
+
+- `scores` — список score-vector или `None` для недосчитанных индексов;
+- `attempts` — общее число запусков worker для каждой особи;
+- `missing_indices` — индексы окончательно недосчитанных особей;
+- `deferred_indices` — transient-особи, отложенные до изменения внешних условий;
+- `transient_failures` — счетчики transient failures по строковому индексу особи;
+- `final_attempts` — счетчики transient-попыток в final phase;
+- `last_errors` — последняя metadata ошибки по строковому индексу особи: `failure_mode`, `failure_kind`, `error_type`, `error_message`, `error_repr`, `details`, `attempt`, `final_phase`.
 
 При `IncompleteEpochError` новое поколение не создается, `iterations` не увеличивается, а in-progress состояние оценки остается в движке.
 

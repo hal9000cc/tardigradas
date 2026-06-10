@@ -13,9 +13,11 @@ from tardigradas import (
     GenType,
     IncompleteEpochError,
     Individual,
+    PermanentEvaluationError,
     Problem,
     Tardigradas,
     TardigradasException,
+    TransientEvaluationError,
 )
 from tests.helpers import build_population, create_engine
 
@@ -55,6 +57,37 @@ class MissingEvaluationProblem(ImportableEvaluationProblem):
         context = individual.evaluation_context
         if context is not None and context.individual_index == 1:
             raise RuntimeError("permanent failure")
+        return float(individual.chromo[0])
+
+
+class TransientThenSuccessEvaluationProblem(ImportableEvaluationProblem):
+    @staticmethod
+    def fitness(individual: Individual) -> float:
+        context = individual.evaluation_context
+        if context is not None and context.individual_index == 0 and context.attempt < 2:
+            raise TransientEvaluationError(
+                "temporary_resource_unavailable",
+                message="resource is busy",
+                details={"resource": "test"},
+            )
+        return float(individual.chromo[0])
+
+
+class AlwaysTransientEvaluationProblem(ImportableEvaluationProblem):
+    @staticmethod
+    def fitness(individual: Individual) -> float:
+        context = individual.evaluation_context
+        if context is not None and context.individual_index == 0:
+            raise TransientEvaluationError("temporary_resource_unavailable", message="resource is still busy")
+        return float(individual.chromo[0])
+
+
+class PermanentEvaluationProblem(ImportableEvaluationProblem):
+    @staticmethod
+    def fitness(individual: Individual) -> float:
+        context = individual.evaluation_context
+        if context is not None and context.individual_index == 1:
+            raise PermanentEvaluationError("invalid_individual", message="bad chromosome")
         return float(individual.chromo[0])
 
 
@@ -138,12 +171,117 @@ def test_parallel_evaluation_starts_next_task_when_one_worker_finishes(monkeypat
         )
 
     monkeypatch.setattr(evaluation_module, "_start_worker", fake_start_worker)
-    monkeypatch.setattr(evaluation_module, "_read_worker_score", lambda task: [float(task.index)])
+    monkeypatch.setattr(
+        evaluation_module,
+        "_read_worker_result",
+        lambda task: evaluation_module.WorkerResult(ok=True, score=[float(task.index)]),
+    )
 
     engine.estimate_population()
 
     assert start_times[2] < start_times[0] + durations[0]
     np.testing.assert_allclose(engine.scores, np.array([0.0, 1.0, 2.0]))
+
+
+def test_read_worker_result_includes_transient_failure_metadata(tmp_path) -> None:
+    response_path = tmp_path / "response.pkl"
+    with response_path.open("wb") as file:
+        import pickle
+
+        pickle.dump(
+            {
+                "ok": False,
+                "failure_mode": "transient",
+                "retryable": True,
+                "failure_kind": "temporary_resource_unavailable",
+                "error_type": "TransientEvaluationError",
+                "error_message": "resource is busy",
+                "error_repr": "TransientEvaluationError('resource is busy')",
+                "details": {"resource": "test"},
+            },
+            file,
+        )
+
+    class DoneProcess:
+        returncode = 1
+
+        def poll(self) -> int:
+            return 1
+
+    task = evaluation_module._RunningTask(
+        process=cast(Any, DoneProcess()),
+        index=0,
+        attempt=1,
+        response_path=response_path,
+    )
+
+    result = evaluation_module._read_worker_result(task)
+
+    assert not result.ok
+    assert result.retryable is True
+    assert result.failure_mode == "transient"
+    assert result.failure_kind == "temporary_resource_unavailable"
+    assert result.details == {"resource": "test"}
+
+
+def test_parallel_evaluation_retries_transient_failure_while_other_work_exists() -> None:
+    engine = create_engine(
+        problem=TransientThenSuccessEvaluationProblem,
+        population_size=3,
+        n_elits=1,
+        evaluation=EvaluationConfig(workers=2, max_attempts=1),
+    )
+    engine.population = build_population(engine, [[1.0], [2.0], [3.0]])
+
+    engine.estimate_population()
+
+    np.testing.assert_allclose(engine.scores, np.array([1.0, 2.0, 3.0]))
+    assert engine.evaluation_state is None
+
+
+def test_parallel_evaluation_reports_unresolved_transient_failure_after_final_attempts() -> None:
+    engine = create_engine(
+        problem=AlwaysTransientEvaluationProblem,
+        population_size=3,
+        n_elits=1,
+        evaluation=EvaluationConfig(workers=2, max_attempts=2),
+    )
+    engine.population = build_population(engine, [[1.0], [2.0], [3.0]])
+
+    with pytest.raises(IncompleteEpochError) as error:
+        engine.estimate_population()
+
+    assert error.value.missing_indices == [0]
+    assert engine.evaluation_state is not None
+    evaluation_state = cast(dict[str, Any], engine.evaluation_state)
+    scores = cast(list[Any], evaluation_state["scores"])
+    assert scores[0] is None
+    assert scores[1] == [2.0]
+    assert scores[2] == [3.0]
+    assert evaluation_state["phase"] == "incomplete_population"
+    assert evaluation_state["missing_indices"] == [0]
+    assert int(cast(dict[str, Any], evaluation_state["transient_failures"])["0"]) >= 1
+    assert cast(dict[str, Any], evaluation_state["final_attempts"])["0"] == 2
+    assert cast(dict[str, Any], evaluation_state["last_errors"])["0"]["failure_kind"] == "temporary_resource_unavailable"
+
+
+def test_parallel_evaluation_marks_permanent_failure_missing_without_retries() -> None:
+    engine = create_engine(
+        problem=PermanentEvaluationProblem,
+        population_size=3,
+        n_elits=1,
+        evaluation=EvaluationConfig(workers=2, max_attempts=3),
+    )
+    engine.population = build_population(engine, [[1.0], [2.0], [3.0]])
+
+    with pytest.raises(IncompleteEpochError) as error:
+        engine.estimate_population()
+
+    assert error.value.missing_indices == [1]
+    assert engine.evaluation_state is not None
+    evaluation_state = cast(dict[str, Any], engine.evaluation_state)
+    assert evaluation_state["attempts"] == [1, 1, 1]
+    assert cast(dict[str, Any], evaluation_state["last_errors"])["1"]["failure_mode"] == "permanent"
 
 
 def test_parallel_evaluation_reports_incomplete_epoch_after_all_possible_work() -> None:
@@ -201,6 +339,32 @@ def test_parallel_evaluation_restores_partial_state_and_only_calculates_missing_
     np.testing.assert_allclose(restored.full_scores[0], np.array([99.0, 99.0, 99.0]))
     np.testing.assert_allclose(restored.full_scores[1], np.array([2.0, 1.0, 1.0]))
     np.testing.assert_allclose(restored.full_scores[2], np.array([3.0, 2.0, 1.0]))
+
+
+def test_prepare_evaluation_state_adds_transient_fields_to_legacy_state() -> None:
+    engine = create_engine(
+        problem=ImportableEvaluationProblem,
+        population_size=2,
+        n_elits=1,
+        evaluation=EvaluationConfig(workers=2),
+    )
+    engine.population = build_population(engine, [[1.0], [2.0]])
+    engine.evaluation_state = {
+        "phase": "evaluating_population",
+        "generation": engine.iterations,
+        "population_signatures": [individual.chromo.tobytes() for individual in engine.population],
+        "scores": [None, None],
+        "attempts": [0, 0],
+        "max_attempts": 3,
+        "missing_indices": [],
+    }
+
+    state = evaluation_module.prepare_evaluation_state(engine, max_attempts=3)
+
+    assert state["deferred_indices"] == []
+    assert state["transient_failures"] == {}
+    assert state["last_errors"] == {}
+    assert state["final_attempts"] == {}
 
 
 def test_subprocess_evaluation_rejects_local_problem_class() -> None:

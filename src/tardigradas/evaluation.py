@@ -38,6 +38,19 @@ class EvaluationContext:
     attempt: int
 
 
+@dataclass(frozen=True)
+class WorkerResult:
+    ok: bool
+    score: Optional[list[float]] = None
+    retryable: bool = False
+    failure_mode: Optional[str] = None
+    failure_kind: Optional[str] = None
+    error_type: Optional[str] = None
+    error_message: Optional[str] = None
+    error_repr: Optional[str] = None
+    details: Optional[dict[str, Any]] = None
+
+
 def normalize_fitness_score(raw_score: Any) -> np.ndarray:
     if np.isscalar(raw_score):
         return np.asarray([raw_score], dtype=float).reshape(-1)
@@ -72,6 +85,10 @@ def create_evaluation_state(engine: Tardigradas, max_attempts: int) -> dict[str,
         "attempts": [0 for _ in engine.population],
         "max_attempts": int(max_attempts),
         "missing_indices": [],
+        "deferred_indices": [],
+        "transient_failures": {},
+        "last_errors": {},
+        "final_attempts": {},
     }
 
 
@@ -97,11 +114,17 @@ def prepare_evaluation_state(engine: Tardigradas, max_attempts: int) -> dict[str
     state["attempts"] = [int(attempt) for attempt in attempts]
     state["max_attempts"] = int(max_attempts)
     state.setdefault("missing_indices", [])
+    state.setdefault("deferred_indices", [])
+    state.setdefault("transient_failures", {})
+    state.setdefault("last_errors", {})
+    state.setdefault("final_attempts", {})
 
     if state.get("phase") == "incomplete_population":
         for index in state["missing_indices"]:
             state["attempts"][int(index)] = 0
         state["missing_indices"] = []
+        state["deferred_indices"] = []
+        state["final_attempts"] = {}
         state["phase"] = "evaluating_population"
 
     engine.evaluation_state = state
@@ -204,20 +227,116 @@ def _start_worker(
     return _RunningTask(process=process, index=index, attempt=attempt, response_path=response_path)
 
 
-def _read_worker_score(task: _RunningTask) -> list[float] | None:
-    if task.process.returncode != 0 or not task.response_path.exists():
-        return None
+def _read_worker_result(task: _RunningTask) -> WorkerResult:
+    if not task.response_path.exists():
+        return WorkerResult(
+            ok=False,
+            failure_mode="worker_failed",
+            failure_kind="worker_failed",
+            error_message="worker did not write a response",
+        )
 
     try:
         with task.response_path.open("rb") as file:
             response = pickle.load(file)
-    except Exception:
-        return None
+    except Exception as exc:
+        return WorkerResult(
+            ok=False,
+            failure_mode="invalid_response",
+            failure_kind="invalid_response",
+            error_type=type(exc).__name__,
+            error_message=str(exc),
+            error_repr=repr(exc),
+        )
 
 
-    if not isinstance(response, dict) or not response.get("ok", False):
-        return None
-    return normalize_fitness_score(response.get("score")).tolist()
+    if not isinstance(response, dict):
+        return WorkerResult(
+            ok=False,
+            failure_mode="invalid_response",
+            failure_kind="invalid_response",
+            error_message="worker response is not a dictionary",
+        )
+
+    if response.get("ok", False):
+        try:
+            score = normalize_fitness_score(response.get("score")).tolist()
+        except Exception as exc:
+            return WorkerResult(
+                ok=False,
+                failure_mode="invalid_response",
+                failure_kind="invalid_response",
+                error_type=type(exc).__name__,
+                error_message=str(exc),
+                error_repr=repr(exc),
+            )
+        return WorkerResult(ok=True, score=score)
+
+    details = response.get("details")
+    return WorkerResult(
+        ok=False,
+        retryable=bool(response.get("retryable", False)),
+        failure_mode=response.get("failure_mode"),
+        failure_kind=response.get("failure_kind"),
+        error_type=response.get("error_type"),
+        error_message=response.get("error_message"),
+        error_repr=response.get("error_repr"),
+        details=details if isinstance(details, dict) else None,
+    )
+
+
+def _read_worker_score(task: _RunningTask) -> Optional[list[float]]:
+    result = _read_worker_result(task)
+    return result.score if result.ok else None
+
+
+def _append_unique(indices: list[Any], index: int) -> None:
+    if index not in [int(value) for value in indices]:
+        indices.append(index)
+
+
+def _remove_index(indices: list[Any], index: int) -> None:
+    indices[:] = [value for value in indices if int(value) != int(index)]
+
+
+def _error_metadata(result: WorkerResult, attempt: int, final_phase: bool) -> dict[str, Any]:
+    return {
+        "retryable": bool(result.retryable),
+        "failure_mode": result.failure_mode,
+        "failure_kind": result.failure_kind,
+        "error_type": result.error_type,
+        "error_message": result.error_message,
+        "error_repr": result.error_repr,
+        "details": {} if result.details is None else dict(result.details),
+        "attempt": int(attempt),
+        "final_phase": bool(final_phase),
+    }
+
+
+def _record_worker_error(state: dict[str, Any], index: int, result: WorkerResult, attempt: int, final_phase: bool) -> None:
+    state["last_errors"][str(index)] = _error_metadata(result, attempt, final_phase)
+
+
+def _record_transient_failure(state: dict[str, Any], index: int, result: WorkerResult, attempt: int, final_phase: bool) -> None:
+    key = str(index)
+    state["transient_failures"][key] = int(state["transient_failures"].get(key, 0)) + 1
+    _record_worker_error(state, index, result, attempt, final_phase)
+
+
+def _mark_missing(engine: Tardigradas, state: dict[str, Any], index: int) -> None:
+    _append_unique(state["missing_indices"], int(index))
+    _remove_index(state["deferred_indices"], int(index))
+    _notify_progress(engine, state)
+
+
+def _pending_indices(state: dict[str, Any]) -> deque[int]:
+    missing_indices = {int(index) for index in state.get("missing_indices", [])}
+    deferred_indices = {int(index) for index in state.get("deferred_indices", [])}
+    return deque(
+        index
+        for index, score in enumerate(state["scores"])
+        if score is None and index not in missing_indices and index not in deferred_indices
+    )
 
 
 def _completed_count(state: dict[str, Any]) -> int:
@@ -236,20 +355,48 @@ def _notify_progress(engine: Tardigradas, state: dict[str, Any]) -> None:
 def estimate_population_subprocess(engine: Tardigradas, config: EvaluationConfig) -> None:
     state = prepare_evaluation_state(engine, config.max_attempts)
     problem_module, problem_qualified_name = problem_import_path(engine.problem)
-    pending = deque(index for index, score in enumerate(state["scores"]) if score is None)
+    deferred = deque(int(index) for index in state.get("deferred_indices", []))
+    state["deferred_indices"] = list(dict.fromkeys(int(index) for index in deferred))
+    deferred = deque(state["deferred_indices"])
+    pending = _pending_indices(state)
     in_flight: list[_RunningTask] = []
+    finalizing_transient = False
+    schedule_allowed = True
+    can_schedule_deferred = False
 
     with tempfile.TemporaryDirectory(prefix="tardigradas-eval-") as temp_name:
         temp_dir = Path(temp_name)
-        while pending or in_flight:
-            while pending and len(in_flight) < config.workers:
-                index = int(pending.popleft())
+        while pending or deferred or in_flight:
+            if not pending and not in_flight and deferred:
+                finalizing_transient = True
+                pending.extend(deferred)
+                deferred.clear()
+                state["deferred_indices"] = []
+                schedule_allowed = True
+                can_schedule_deferred = True
+
+            while schedule_allowed and len(in_flight) < config.workers and (pending or deferred):
+                from_deferred = False
+                if deferred and (finalizing_transient or can_schedule_deferred):
+                    index = int(deferred.popleft())
+                    _remove_index(state["deferred_indices"], index)
+                    from_deferred = True
+                elif pending:
+                    index = int(pending.popleft())
+                else:
+                    break
+
                 if state["scores"][index] is not None:
                     continue
-                if int(state["attempts"][index]) >= config.max_attempts:
-                    if index not in state["missing_indices"]:
-                        state["missing_indices"].append(index)
-                        _notify_progress(engine, state)
+                if index in {int(value) for value in state["missing_indices"]}:
+                    continue
+
+                if not finalizing_transient and not from_deferred and int(state["attempts"][index]) >= config.max_attempts:
+                    _mark_missing(engine, state, index)
+                    continue
+
+                if finalizing_transient and int(state["final_attempts"].get(str(index), 0)) >= config.max_attempts:
+                    _mark_missing(engine, state, index)
                     continue
 
                 attempt = int(state["attempts"][index]) + 1
@@ -264,6 +411,8 @@ def estimate_population_subprocess(engine: Tardigradas, config: EvaluationConfig
                         problem_qualified_name,
                     )
                 )
+            schedule_allowed = False
+            can_schedule_deferred = False
 
             completed: list[_RunningTask] = []
             for task in in_flight:
@@ -274,19 +423,47 @@ def estimate_population_subprocess(engine: Tardigradas, config: EvaluationConfig
                 time.sleep(0.01)
                 continue
 
+            allow_next_schedule = False
             for task in completed:
                 in_flight.remove(task)
-                score = _read_worker_score(task)
-                if score is not None:
-                    state["scores"][task.index] = score
+                result = _read_worker_result(task)
+                if result.ok:
+                    allow_next_schedule = True
+                    can_schedule_deferred = True
+                    state["scores"][task.index] = result.score
+                    _remove_index(state["deferred_indices"], task.index)
+                    state["final_attempts"].pop(str(task.index), None)
                     _notify_progress(engine, state)
                     continue
 
-                if int(state["attempts"][task.index]) < config.max_attempts:
+                if result.retryable:
+                    _record_transient_failure(state, task.index, result, task.attempt, finalizing_transient)
+                    if finalizing_transient:
+                        key = str(task.index)
+                        state["final_attempts"][key] = int(state["final_attempts"].get(key, 0)) + 1
+                        if int(state["final_attempts"][key]) < config.max_attempts:
+                            pending.append(task.index)
+                            allow_next_schedule = True
+                        else:
+                            _mark_missing(engine, state, task.index)
+                            allow_next_schedule = True
+                    else:
+                        state["final_attempts"].pop(str(task.index), None)
+                        if state["scores"][task.index] is None and task.index not in [int(value) for value in state["missing_indices"]]:
+                            deferred.append(task.index)
+                            _append_unique(state["deferred_indices"], task.index)
+                    continue
+
+                allow_next_schedule = True
+                can_schedule_deferred = True
+                _record_worker_error(state, task.index, result, task.attempt, finalizing_transient)
+                if result.failure_mode == "permanent":
+                    _mark_missing(engine, state, task.index)
+                elif int(state["attempts"][task.index]) < config.max_attempts:
                     pending.append(task.index)
-                elif task.index not in state["missing_indices"]:
-                    state["missing_indices"].append(task.index)
-                    _notify_progress(engine, state)
+                else:
+                    _mark_missing(engine, state, task.index)
+            schedule_allowed = allow_next_schedule or (not in_flight and bool(pending or deferred))
 
     missing = [index for index, score in enumerate(state["scores"]) if score is None]
     if missing:
