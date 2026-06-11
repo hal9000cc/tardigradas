@@ -182,6 +182,8 @@ def create_engine(
     n_elits: int = 1,
     crossover_policy: CrossoverPolicy | None = None,
     evaluation: EvaluationConfig | None = None,
+    selection_alpha: float = 0.5,
+    selection_uniform_mix: float = 0.0,
 ) -> Tardigradas:
     return Tardigradas(
         problem=problem,
@@ -192,4 +194,6 @@ def create_engine(
         n_elits=n_elits,
         crossover_policy=crossover_policy,
         evaluation=evaluation,
+        selection_alpha=selection_alpha,
+        selection_uniform_mix=selection_uniform_mix,
     )

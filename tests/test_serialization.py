@@ -20,6 +20,8 @@ def test_state_dict_contains_critical_runtime_fields(engine) -> None:
     assert np.array_equal(state["step_best_individual"], engine.step_best_individual.chromo)
     assert state["step_validate_score"] == engine.step_validate_score
     assert state["validate_scores_history"] == engine.validate_scores_history
+    assert state["selection_alpha"] == engine.selection_alpha
+    assert state["selection_uniform_mix"] == engine.selection_uniform_mix
 
 
 def test_restore_from_dict_restores_population_and_best_state(engine) -> None:
@@ -44,6 +46,18 @@ def test_restore_from_dict_restores_population_and_best_state(engine) -> None:
     assert np.array_equal(restored.scores, engine.scores)
     assert restored.step_validate_score == engine.step_validate_score
     assert restored.validate_scores_history == engine.validate_scores_history
+    assert restored.selection_alpha == engine.selection_alpha
+    assert restored.selection_uniform_mix == engine.selection_uniform_mix
+
+
+def test_restore_from_dict_preserves_selection_parameters() -> None:
+    engine = create_engine(selection_alpha=0.25, selection_uniform_mix=0.2)
+
+    restored = create_engine()
+    restored.restore_from_dict(engine.state_dict())
+
+    assert restored.selection_alpha == 0.25
+    assert restored.selection_uniform_mix == 0.2
 
 
 def test_save_to_file_and_restore_from_file_round_trip(engine, tmp_path) -> None:

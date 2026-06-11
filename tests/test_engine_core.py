@@ -29,6 +29,11 @@ from tests.helpers import (
         {"crossover_fraction": -0.1},
         {"fresh_blood_fraction": -0.1},
         {"gen_mutation_fraction": -0.1},
+        {"selection_alpha": -0.1},
+        {"selection_alpha": float("nan")},
+        {"selection_uniform_mix": -0.1},
+        {"selection_uniform_mix": 1.1},
+        {"selection_uniform_mix": float("inf")},
         {"crossover_fraction": 0.8, "fresh_blood_fraction": 0.3},
         {"n_elits": -1},
         {"n_elits": 6},
@@ -90,6 +95,13 @@ def test_engine_uses_uniform_policy_by_default() -> None:
         bit=CrossoverBitType.uniform,
         float=CrossoverFloatType.uniform,
     )
+
+
+def test_engine_uses_default_selection_parameters() -> None:
+    engine = create_engine()
+
+    assert engine.selection_alpha == 0.5
+    assert engine.selection_uniform_mix == 0.0
 
 
 def test_new_valid_individual_returns_valid_individual(engine) -> None:
@@ -448,6 +460,8 @@ def test_step_uses_expected_number_of_parents(monkeypatch) -> None:
         crossover_fraction=0.4,
         fresh_blood_fraction=0.2,
         n_elits=1,
+        selection_alpha=0.25,
+        selection_uniform_mix=0.2,
     )
     engine.population = build_population(
         engine,
@@ -463,7 +477,17 @@ def test_step_uses_expected_number_of_parents(monkeypatch) -> None:
 
     captured_expectation: np.ndarray | None = None
     captured_count: int | None = None
+    captured_rank_scores: np.ndarray | None = None
+    captured_rank_alpha: float | None = None
+    captured_rank_uniform_mix: float | None = None
     fresh_blood_calls = {"count": 0}
+
+    def fake_rank(scores: np.ndarray, alpha: float, uniform_mix: float) -> np.ndarray:
+        nonlocal captured_rank_scores, captured_rank_alpha, captured_rank_uniform_mix
+        captured_rank_scores = np.array(scores, copy=True)
+        captured_rank_alpha = alpha
+        captured_rank_uniform_mix = uniform_mix
+        return np.full(len(scores), 1.0 / len(scores), dtype=float)
 
     def fake_select_parents(expectation: np.ndarray, count: int) -> np.ndarray:
         nonlocal captured_expectation, captured_count
@@ -475,6 +499,7 @@ def test_step_uses_expected_number_of_parents(monkeypatch) -> None:
         fresh_blood_calls["count"] += 1
         return engine.create_individual(chromo=[1.0, 5.0, 0.7])
 
+    monkeypatch.setattr(engine_module, "rank", fake_rank)
     monkeypatch.setattr(engine_module, "select_parents", fake_select_parents)
     monkeypatch.setattr(np.random, "permutation", lambda values: np.array(values, copy=True))
     monkeypatch.setattr(
@@ -501,6 +526,10 @@ def test_step_uses_expected_number_of_parents(monkeypatch) -> None:
     assert captured_count == 6
     assert captured_expectation is not None
     assert captured_expectation.shape == (engine.population_size,)
+    assert captured_rank_scores is not None
+    assert captured_rank_scores.shape == (engine.population_size,)
+    assert captured_rank_alpha == 0.25
+    assert captured_rank_uniform_mix == 0.2
     assert fresh_blood_calls["count"] == 1
 
 

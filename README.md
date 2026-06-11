@@ -177,6 +177,8 @@ ga = Tardigradas(
     crossover_fraction=0.5,
     fresh_blood_fraction=0.1,
     gen_mutation_fraction=0.1,
+    selection_alpha=0.5,
+    selection_uniform_mix=0.0,
     fitness_environment=None,
     n_elits=2,
     crossover_policy=CrossoverPolicy.explicit(
@@ -199,6 +201,8 @@ print("Лучшая особь:", ga.best_individual.chromo)
 - `crossover_fraction` — доля новых особей, получаемых кроссовером;
 - `fresh_blood_fraction` — доля случайно добавляемых особей;
 - `gen_mutation_fraction` — интенсивность мутации;
+- `selection_alpha` — степень в rank-селекции: чем больше значение, тем сильнее давление отбора;
+- `selection_uniform_mix` — доля равномерного подмешивания к rank-распределению, чтобы ограничить доминирование случайно удачных особей;
 - `fitness_environment` — произвольное внешнее окружение;
 - `n_elits` — число элитных особей;
 - `crossover_policy` — explicit/adaptive политика выбора операторов кроссовера;

@@ -42,6 +42,8 @@ class Tardigradas:
         n_elits: Optional[int] = None,
         crossover_policy: Optional[CrossoverPolicy] = None,
         evaluation: Optional[EvaluationConfig] = None,
+        selection_alpha: float = 0.5,
+        selection_uniform_mix: float = 0.0,
     ) -> None:
         if not issubclass(problem, Problem):
             raise TypeError("problem must be a Problem subclass")
@@ -51,6 +53,10 @@ class Tardigradas:
             raise ValueError("fractions must be non-negative")
         if crossover_fraction + fresh_blood_fraction > 1:
             raise ValueError("crossover_fraction + fresh_blood_fraction must be <= 1")
+        if not np.isfinite(selection_alpha) or selection_alpha < 0.0:
+            raise ValueError("selection_alpha must be a finite non-negative number")
+        if not np.isfinite(selection_uniform_mix) or selection_uniform_mix < 0.0 or selection_uniform_mix > 1.0:
+            raise ValueError("selection_uniform_mix must be a finite number in range [0, 1]")
 
         self.problem = problem
         self.environment = fitness_environment
@@ -58,6 +64,8 @@ class Tardigradas:
         self.crossover_fraction = float(crossover_fraction)
         self.fresh_blood_fraction = float(fresh_blood_fraction)
         self.gen_mutation_fraction = float(gen_mutation_fraction)
+        self.selection_alpha = float(selection_alpha)
+        self.selection_uniform_mix = float(selection_uniform_mix)
         self.n_elits = 1 if n_elits is None else int(n_elits)
         if crossover_policy is not None and not isinstance(crossover_policy, CrossoverPolicy):
             raise TypeError("crossover_policy must be CrossoverPolicy or None")
@@ -881,7 +889,11 @@ class Tardigradas:
         n_mutation = n_generation_slots - n_crossover - n_fresh_blood
         n_parents = n_crossover * 2 + n_mutation
 
-        expectation = rank(self.scores)
+        expectation = rank(
+            self.scores,
+            alpha=self.selection_alpha,
+            uniform_mix=self.selection_uniform_mix,
+        )
         parent_indices = select_parents(expectation, n_parents)
         parent_indices = np.random.permutation(parent_indices)
 
