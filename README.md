@@ -257,6 +257,8 @@ Subprocess получает только хромосому и служебны�
 
 Если subprocess упал или `fitness()` выбросил обычное исключение, расчет особи повторяется до `max_attempts`. Если все попытки исчерпаны, scheduler продолжает считать остальные особи. После завершения всех возможных расчетов эпоха останавливается с `IncompleteEpochError`, где `missing_indices` содержит индексы недосчитанных особей.
 
+Ограничение текущей версии: subprocess worker не имеет встроенного timeout. Если пользовательский `fitness()` или внешний backend зависнет внутри worker-процесса, текущая эпоха может ожидать этот процесс неограниченно долго. Для таких сценариев рекомендуется реализовать timeout/отмену внутри пользовательского кода fitness или запускать такие расчеты во внешнем backend'е с собственным контролем времени выполнения.
+
 Для явного управления ошибками `fitness()` может бросить typed exceptions из публичного API библиотеки:
 
 ```python
@@ -556,12 +558,12 @@ python benchmarks/run_ackley.py
 
 ## Pytest benchmark-тесты
 
-Обычные benchmark-задачи сохранены в `tests/test_engine_benchmarks.py` как regression-тесты качества.
+Обычные benchmark-задачи сохранены в `tests/test_engine_benchmarks.py` как отдельные `slow` regression-тесты качества. Они не входят в обычный pytest-прогон по умолчанию.
 
 Их можно запускать отдельно:
 
 ```bash
-python -m pytest tests/test_engine_benchmarks.py -q
+python -m pytest tests/test_engine_benchmarks.py -q -m slow
 ```
 
 ## Отдельный MNIST benchmark с PyTorch

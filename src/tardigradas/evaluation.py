@@ -146,7 +146,7 @@ def estimate_population_sequential(engine: Tardigradas) -> None:
     for i, individual in enumerate(engine.population):
         scores.append(individual.fitness())
         if engine.fitness_progress_fun:
-            engine.fitness_progress_fun(engine, i / engine.population_size)
+            engine.fitness_progress_fun(engine, (i + 1) / engine.population_size)
 
     engine.full_scores = np.vstack(scores)
     engine.scores = engine.full_scores[:, 0]

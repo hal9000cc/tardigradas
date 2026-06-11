@@ -35,6 +35,7 @@ def state_dict(engine: Any) -> dict[str, Any]:
         "n_elits": engine.n_elits,
         "population_size": engine.population_size,
         "scores": engine.scores,
+        "full_scores": engine.full_scores,
         "best_score": engine.best_score,
         "best_iteration": engine.best_iteration,
         "best_resolve": best_individual,
@@ -78,6 +79,7 @@ def restore_from_dict(engine: Any, state: dict[str, Any]) -> None:
     engine.n_elits = int(state.get("n_elits", engine.n_elits))
     engine.population_size = int(state.get("population_size", engine.population_size))
     engine.scores = np.array(state.get("scores", []), dtype=float)
+    engine.full_scores = np.array(state.get("full_scores", np.zeros((0, 1), dtype=float)), dtype=float)
     engine.best_score = state.get("best_score")
     engine.best_iteration = int(state.get("best_iteration", 0))
     engine.crossover_policy = state.get("crossover_policy", engine.crossover_policy)
@@ -120,7 +122,6 @@ def restore_from_dict(engine: Any, state: dict[str, Any]) -> None:
     engine._adaptive_last_float_epoch_successes.update(state.get("adaptive_last_float_epoch_successes", {}))
     engine._adaptive_last_float_instant_scores.update(state.get("adaptive_last_float_instant_scores", {}))
 
-    engine.full_scores = np.zeros((0, 1), dtype=float)
     engine.fitness_progress_fun = None
     engine.step_population_origins = []
 

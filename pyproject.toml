@@ -7,7 +7,7 @@ name = "tardigradas"
 version = "0.1.0"
 description = "Compact genetic algorithm library for optimization tasks"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "numpy",
 ]
@@ -27,7 +27,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.pytest.ini_options]
-addopts = "-ra"
+addopts = "-ra -m 'not slow'"
 testpaths = ["tests"]
 markers = [
     "slow: marks long-running benchmark-style tests",

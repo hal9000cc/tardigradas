@@ -42,7 +42,14 @@ class Individual:
 
         n_bits = int(ixb_bits.sum())
         if n_bits:
-            new_chromo[ixb_bits] = np.random.random(n_bits) > 0.5
+            bit_lows = schema_prefix["bounds_min"][ixb_bits]
+            bit_highs = schema_prefix["bounds_max"][ixb_bits]
+            random_bits = (np.random.random(n_bits) > 0.5).astype(float)
+            fixed_bits = bit_lows == bit_highs
+            random_bits[fixed_bits] = bit_lows[fixed_bits]
+            random_bits[bit_lows > 0.0] = 1.0
+            random_bits[bit_highs < 1.0] = 0.0
+            new_chromo[ixb_bits] = random_bits
 
         n_float = int(ixb_float.sum())
         if n_float:
@@ -63,6 +70,9 @@ class Individual:
             ixb_defaults &= ixb_apply_defaults
             new_chromo[ixb_defaults] = defaults[ixb_defaults]
 
+        if not self.tardigradas.validate_chromosome(new_chromo):
+            raise ValueError("generated chromosome values must match ChromosomeSchema bounds and gene types")
+
         self.chromo = new_chromo
 
     def chromo_new(
@@ -71,9 +81,7 @@ class Individual:
         use_defaults: bool = False,
     ) -> None:
         if chromo is not None:
-            validated = np.array(chromo, dtype=float).reshape(-1)
-            self.tardigradas._validate_chromo_length(len(validated))
-            self.chromo = validated
+            self.chromo = self.tardigradas._validate_chromosome(chromo)
             return
 
         self.chromo_new_random(use_defaults=use_defaults)
@@ -95,4 +103,4 @@ class Individual:
         return normalize_fitness_score(raw_score)
 
     def chromo_valid(self) -> bool:
-        return bool(self.tardigradas.problem.chromo_valid(self))
+        return bool(self.tardigradas.validate_chromosome(self.chromo) and self.tardigradas.problem.chromo_valid(self))

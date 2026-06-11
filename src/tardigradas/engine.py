@@ -636,32 +636,83 @@ class Tardigradas:
             raise ValueError("chromosome length cannot exceed schema chromo_size")
         return length
 
+    def _integer_bounds_for_prefix(self, chromo_length: int) -> tuple[np.ndarray, np.ndarray]:
+        length = self._validate_chromo_length(chromo_length)
+        bounds_min = self.chromo_bounds_min[:length].copy()
+        bounds_max = self.chromo_bounds_max[:length].copy()
+        bit_mask = self.gen_types[:length] == GenType.bit.value
+        if bit_mask.any():
+            bounds_min[bit_mask] = np.maximum(bounds_min[bit_mask], 0.0)
+            bounds_max[bit_mask] = np.minimum(bounds_max[bit_mask], 1.0)
+            if np.any(bounds_min[bit_mask] > bounds_max[bit_mask]):
+                raise ValueError("bit gene bounds must overlap the {0, 1} domain")
+        int_mask = self.gen_types[:length] == GenType.int.value
+        if int_mask.any():
+            bounds_min[int_mask] = np.ceil(bounds_min[int_mask])
+            bounds_max[int_mask] = np.floor(bounds_max[int_mask])
+            if np.any(bounds_min[int_mask] > bounds_max[int_mask]):
+                raise ValueError("int gene bounds must contain at least one integer value")
+        return bounds_min, bounds_max
+
+    def validate_chromosome(self, chromo: Sequence[float] | np.ndarray) -> bool:
+        values = np.asarray(chromo, dtype=float).reshape(-1)
+        try:
+            length = self._validate_chromo_length(len(values))
+            bounds_min, bounds_max = self._integer_bounds_for_prefix(length)
+        except ValueError:
+            return False
+
+        if np.any(~np.isfinite(values)):
+            return False
+        if np.any(values < bounds_min) or np.any(values > bounds_max):
+            return False
+
+        gen_types = self.gen_types[:length]
+        bit_mask = gen_types == GenType.bit.value
+        if bit_mask.any() and np.any((values[bit_mask] != 0.0) & (values[bit_mask] != 1.0)):
+            return False
+
+        int_mask = gen_types == GenType.int.value
+        if int_mask.any() and np.any(values[int_mask] != np.rint(values[int_mask])):
+            return False
+
+        return True
+
+    def _validate_chromosome(self, chromo: Sequence[float] | np.ndarray) -> np.ndarray:
+        values = np.asarray(chromo, dtype=float).reshape(-1)
+        if not self.validate_chromosome(values):
+            raise ValueError("chromosome values must match ChromosomeSchema bounds and gene types")
+        return values
+
     def _round_int_genes(self, chromo: np.ndarray) -> np.ndarray:
         rounded = np.array(chromo, dtype=float, copy=True)
         if rounded.size == 0:
             return rounded
 
         int_gene_indices = self.int_gene_indices[self.int_gene_indices < len(rounded)]
-        for index in int_gene_indices:
-            rounded[index] = float(round(float(rounded[index])))
+        if int_gene_indices.size:
+            rounded[int_gene_indices] = np.rint(rounded[int_gene_indices])
         return rounded
 
     def _schema_prefix(self, chromo_length: int) -> dict[str, np.ndarray]:
         length = self._validate_chromo_length(chromo_length)
         gen_types = self.gen_types[:length]
+        bounds_min, bounds_max = self._integer_bounds_for_prefix(length)
         return {
             "gen_types": gen_types,
             "gene_groups": self.chromo_gen_groups[:length],
             "bit_gene_mask": self.bit_gene_mask[:length],
             "float_gene_mask": self.float_gene_mask[:length],
-            "bounds_min": self.chromo_bounds_min[:length],
-            "bounds_max": self.chromo_bounds_max[:length],
-            "mutable_positions": np.nonzero(self.chromo_bounds_min[:length] != self.chromo_bounds_max[:length])[0],
+            "bounds_min": bounds_min,
+            "bounds_max": bounds_max,
+            "mutable_positions": np.nonzero(bounds_min != bounds_max)[0],
         }
 
     def _create_crossover_child(self, kid_chromo: np.ndarray) -> Individual:
         rounded_chromo = self._round_int_genes(np.asarray(kid_chromo, dtype=float).reshape(-1))
         self._validate_chromo_length(len(rounded_chromo))
+        if not self.validate_chromosome(rounded_chromo):
+            raise ValueError("crossover produced chromosome outside ChromosomeSchema")
         return self.create_individual(chromo=rounded_chromo)
 
     # ------------------------------------------------------------------
@@ -885,6 +936,9 @@ class Tardigradas:
     ) -> None:
         self.fitness_progress_fun = fitness_progress_fun
         loop_fun = self.show_progress if loop_fun is None else loop_fun
+
+        if max_iterations is not None and max_iterations <= 0:
+            return
 
         while True:
             self.step()

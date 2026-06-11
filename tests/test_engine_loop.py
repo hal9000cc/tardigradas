@@ -16,6 +16,16 @@ def test_loop_stops_when_epoch_without_improve_is_reached() -> None:
     assert len(engine.scores_history) == 3
 
 
+def test_loop_with_zero_max_iterations_does_not_step() -> None:
+    engine = create_engine(problem=ConstantFitnessProblem, population_size=4)
+    engine.population_init()
+
+    engine.loop(max_iterations=0, loop_fun=lambda _: False)
+
+    assert engine.iterations == 0
+    assert engine.scores_history == []
+
+
 def test_loop_stops_when_loop_fun_returns_true() -> None:
     engine = create_engine(problem=ConstantFitnessProblem, population_size=4)
     engine.population_init()
@@ -61,6 +71,6 @@ def test_loop_propagates_fitness_progress_callback_during_population_estimation(
         fitness_progress_fun=lambda _, progress: progress_updates.append(progress),
     )
 
-    expected = [i / engine.population_size for i in range(engine.population_size)]
+    expected = [(i + 1) / engine.population_size for i in range(engine.population_size)]
 
     assert progress_updates == pytest.approx(expected)

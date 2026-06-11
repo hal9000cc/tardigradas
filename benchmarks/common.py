@@ -29,7 +29,7 @@ class _FitnessEvaluationProgress:
         if total <= 0:
             return
 
-        evaluated = int(np.clip(np.floor(progress * total) + 1, 1, total))
+        evaluated = int(np.clip(np.floor(progress * total), 1, total))
         message = f"evaluated: {evaluated}/{total}..."
         self._last_width = max(self._last_width, len(message))
         sys.stdout.write(f"\r{message}")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
+from tardigradas import ChromosomeSchema, GenType, Individual, Problem, Tardigradas
 from tests.helpers import EmptyFitnessProblem, VariableLengthProblem, VectorFitnessProblem, create_engine
 
 
@@ -70,3 +71,96 @@ def test_random_chromosome_can_use_problem_defined_length() -> None:
     individual = engine.create_individual()
 
     assert len(individual.chromo) == 2
+
+
+def test_create_individual_rejects_chromosome_outside_schema() -> None:
+    engine = create_engine()
+
+    with pytest.raises(ValueError, match="ChromosomeSchema"):
+        engine.create_individual(chromo=[0.3, 2.7, 99.0])
+
+
+def test_chromo_valid_combines_schema_and_problem_validation() -> None:
+    class AlwaysAcceptProblem(Problem):
+        @staticmethod
+        def init_environment(tardigradas: Tardigradas) -> None:
+            return None
+
+        @staticmethod
+        def gen_info(tardigradas: Tardigradas) -> ChromosomeSchema:
+            return ChromosomeSchema(
+                gen_types=[GenType.float],
+                bounds=([0.0], [1.0]),
+            )
+
+        @staticmethod
+        def fitness(individual: Individual) -> float:
+            return 0.0
+
+    engine = create_engine(problem=AlwaysAcceptProblem, population_size=2)
+    individual = object.__new__(Individual)
+    individual.tardigradas = engine
+    individual.evaluation_context = None
+    individual.chromo = np.array([2.0], dtype=float)
+
+    assert individual.chromo_valid() is False
+
+
+def test_int_gene_generation_uses_integer_domain_inside_float_bounds() -> None:
+    class NonIntegerIntBoundsProblem(Problem):
+        @staticmethod
+        def init_environment(tardigradas: Tardigradas) -> None:
+            return None
+
+        @staticmethod
+        def gen_info(tardigradas: Tardigradas) -> ChromosomeSchema:
+            return ChromosomeSchema(gen_types=[GenType.int], bounds=([0.7], [1.2]))
+
+        @staticmethod
+        def fitness(individual: Individual) -> float:
+            return 0.0
+
+    engine = create_engine(problem=NonIntegerIntBoundsProblem, population_size=2)
+
+    assert engine.create_individual().chromo.tolist() == [1.0]
+
+
+def test_bit_gene_validation_uses_bit_domain_independent_of_bounds() -> None:
+    class BitProblem(Problem):
+        @staticmethod
+        def init_environment(tardigradas: Tardigradas) -> None:
+            return None
+
+        @staticmethod
+        def gen_info(tardigradas: Tardigradas) -> ChromosomeSchema:
+            return ChromosomeSchema(gen_types=[GenType.bit], bounds=([-10.0], [10.0]))
+
+        @staticmethod
+        def fitness(individual: Individual) -> float:
+            return float(individual[0])
+
+    engine = create_engine(problem=BitProblem, population_size=2)
+
+    assert engine.create_individual(chromo=[1.0]).chromo.tolist() == [1.0]
+    with pytest.raises(ValueError, match="ChromosomeSchema"):
+        engine.create_individual(chromo=[2.0])
+
+
+def test_random_bit_gene_respects_fixed_bit_bounds() -> None:
+    class FixedOneBitProblem(Problem):
+        @staticmethod
+        def init_environment(tardigradas: Tardigradas) -> None:
+            return None
+
+        @staticmethod
+        def gen_info(tardigradas: Tardigradas) -> ChromosomeSchema:
+            return ChromosomeSchema(gen_types=[GenType.bit], bounds=([1.0], [1.0]))
+
+        @staticmethod
+        def fitness(individual: Individual) -> float:
+            return float(individual[0])
+
+    engine = create_engine(problem=FixedOneBitProblem, population_size=2)
+
+    for _ in range(20):
+        assert engine.create_individual().chromo.tolist() == [1.0]

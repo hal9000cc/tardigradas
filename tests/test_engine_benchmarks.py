@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from benchmarks.common import run_benchmark
 from benchmarks.problems import (
@@ -11,6 +12,9 @@ from benchmarks.problems import (
     RoyalRoadProblem,
     SphereProblem,
 )
+
+
+pytestmark = pytest.mark.slow
 
 
 def test_onemax_reaches_near_optimal_bitstring() -> None:

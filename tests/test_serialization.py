@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from tardigradas import CrossoverBitType, CrossoverFloatType, CrossoverPolicy
-from tests.helpers import create_engine
+from tests.helpers import VectorFitnessProblem, create_engine
 
 
 def test_state_dict_contains_critical_runtime_fields(engine) -> None:
@@ -90,3 +90,14 @@ def test_restore_from_dict_preserves_crossover_policy_and_adaptive_state() -> No
     assert restored._adaptive_bit_epoch_successes == engine._adaptive_bit_epoch_successes
     assert restored._adaptive_bit_scores == engine._adaptive_bit_scores
     assert restored.population_origins == engine.population_origins
+
+
+def test_restore_from_dict_restores_full_scores() -> None:
+    engine = create_engine(problem=VectorFitnessProblem)
+    engine.population_init()
+    engine.estimate_population()
+
+    restored = create_engine(problem=VectorFitnessProblem)
+    restored.restore_from_dict(engine.state_dict())
+
+    assert np.array_equal(restored.full_scores, engine.full_scores)
