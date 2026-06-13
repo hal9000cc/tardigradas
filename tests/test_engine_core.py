@@ -277,6 +277,85 @@ def test_step_raises_when_population_is_not_initialized(engine) -> None:
         engine.step()
 
 
+def test_evaluate_population_raises_when_population_is_not_initialized(engine) -> None:
+    with pytest.raises(TardigradasException, match="population is not initialized"):
+        engine.evaluate_population()
+
+
+def test_advance_generation_from_scores_raises_when_population_is_not_initialized(engine) -> None:
+    with pytest.raises(TardigradasException, match="population is not initialized"):
+        engine.advance_generation_from_scores()
+
+
+def test_advance_generation_from_scores_raises_when_scores_are_missing(engine) -> None:
+    engine.population = build_population(
+        engine,
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        ],
+    )
+
+    with pytest.raises(TardigradasException, match="population scores are not available"):
+        engine.advance_generation_from_scores()
+
+
+def test_step_delegates_to_split_public_methods(monkeypatch) -> None:
+    engine = create_engine()
+    engine.population = build_population(
+        engine,
+        [
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        ],
+    )
+    calls: list[str] = []
+
+    monkeypatch.setattr(engine, "evaluate_population", lambda: calls.append("evaluate"))
+    monkeypatch.setattr(engine, "advance_generation_from_scores", lambda: calls.append("advance"))
+
+    engine.step()
+
+    assert calls == ["evaluate", "advance"]
+
+
+def test_split_public_methods_match_step_with_same_random_seed() -> None:
+    step_engine = create_engine(population_size=6, crossover_fraction=0.4, fresh_blood_fraction=0.2, n_elits=1)
+    split_engine = create_engine(population_size=6, crossover_fraction=0.4, fresh_blood_fraction=0.2, n_elits=1)
+    chromosomes = [
+        [0.0, 0.0, -1.0],
+        [0.0, 1.0, -0.5],
+        [0.0, 2.0, 0.0],
+        [1.0, 3.0, 0.2],
+        [0.0, 4.0, 0.4],
+        [1.0, 5.0, 1.0],
+    ]
+    step_engine.population = build_population(step_engine, chromosomes)
+    split_engine.population = build_population(split_engine, chromosomes)
+    step_engine.population_origins = [step_engine._default_population_origin("initial") for _ in chromosomes]
+    split_engine.population_origins = [split_engine._default_population_origin("initial") for _ in chromosomes]
+
+    np.random.seed(12345)
+    step_engine.step()
+
+    split_engine.evaluate_population()
+    np.random.seed(12345)
+    split_engine.advance_generation_from_scores()
+
+    assert split_engine.iterations == step_engine.iterations
+    assert split_engine.best_iteration == step_engine.best_iteration
+    assert split_engine.best_score == pytest.approx(step_engine.best_score)
+    assert split_engine.step_score == pytest.approx(step_engine.step_score)
+    assert split_engine.step_validate_score == step_engine.step_validate_score
+    assert len(split_engine.population) == len(step_engine.population)
+    assert split_engine.scores_history == pytest.approx(step_engine.scores_history)
+    assert split_engine.validate_scores_history == step_engine.validate_scores_history
+    for split_score, step_score in zip(split_engine.custom_scores_history, step_engine.custom_scores_history):
+        np.testing.assert_allclose(split_score, step_score)
+    for split_individual, step_individual in zip(split_engine.population, step_engine.population):
+        np.testing.assert_allclose(split_individual.chromo, step_individual.chromo)
+
+
 def test_mutation_raises_when_all_genes_are_fixed() -> None:
     engine = create_engine(problem=FixedGenesProblem, population_size=2)
     engine.population = [engine.create_individual(chromo=[1.0, 2.0, 0.5])]

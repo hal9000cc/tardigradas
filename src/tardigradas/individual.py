@@ -9,6 +9,7 @@ from .gen_types import GenType
 if TYPE_CHECKING:
     from .engine import Tardigradas
     from .evaluation import EvaluationContext
+    from .task_evaluation import TaskEvaluationContext
 
 
 ChromoInput = Union[Sequence[float], np.ndarray]
@@ -22,7 +23,7 @@ class Individual:
         use_defaults: bool = False,
     ) -> None:
         self.tardigradas = tardigradas
-        self.evaluation_context: EvaluationContext | None = None
+        self.evaluation_context: EvaluationContext | TaskEvaluationContext | None = None
 
         if chromo is None:
             self.chromo_new(use_defaults=use_defaults)

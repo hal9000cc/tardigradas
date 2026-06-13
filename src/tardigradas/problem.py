@@ -7,6 +7,13 @@ import numpy as np
 
 from .individual import Individual
 from .schema import ChromosomeSchema
+from .task_evaluation import (
+    EvaluationTaskResult,
+    EvaluationTaskSpec,
+    IndividualTaskState,
+    TaskEvaluationContext,
+    TaskSchedulingDecision,
+)
 
 if TYPE_CHECKING:
     from .engine import Tardigradas
@@ -31,6 +38,50 @@ class Problem(ABC):
     @staticmethod
     @abstractmethod
     def fitness(individual: Individual) -> Union[Sequence[float], float]:
+        raise NotImplementedError
+
+    @staticmethod
+    def has_evaluation_tasks() -> bool:
+        return False
+
+    @staticmethod
+    def init_task_state(
+        individual: Individual,
+        context: TaskEvaluationContext,
+    ) -> IndividualTaskState:
+        raise NotImplementedError
+
+    @staticmethod
+    def initial_evaluation_tasks(
+        individual: Individual,
+        context: TaskEvaluationContext,
+        state: IndividualTaskState,
+    ) -> list[EvaluationTaskSpec]:
+        raise NotImplementedError
+
+    @staticmethod
+    def evaluate_task(
+        individual: Individual,
+        task: EvaluationTaskSpec,
+        context: TaskEvaluationContext,
+    ) -> EvaluationTaskResult:
+        raise NotImplementedError
+
+    @staticmethod
+    def update_task_state(
+        individual: Individual,
+        context: TaskEvaluationContext,
+        state: IndividualTaskState,
+        result: EvaluationTaskResult,
+    ) -> TaskSchedulingDecision:
+        raise NotImplementedError
+
+    @staticmethod
+    def aggregate_task_results(
+        individual: Individual,
+        context: TaskEvaluationContext,
+        state: IndividualTaskState,
+    ) -> Union[Sequence[float], float]:
         raise NotImplementedError
 
     @staticmethod

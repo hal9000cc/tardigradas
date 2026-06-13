@@ -690,3 +690,12 @@ def estimate_population(engine: Tardigradas, config: Optional[EvaluationConfig])
         estimate_population_sequential(engine)
         return
     estimate_population_subprocess(engine, config)
+
+
+def estimate_task_population(engine: Tardigradas, config: Optional[EvaluationConfig]) -> None:
+    from ._task_runtime import estimate_task_population_sequential, estimate_task_population_subprocess
+
+    if config is None or config.workers <= 1:
+        estimate_task_population_sequential(engine, config)
+        return
+    estimate_task_population_subprocess(engine, config)

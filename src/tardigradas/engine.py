@@ -8,7 +8,7 @@ from typing import Callable, Optional, Sequence, TypeVar, Union
 import numpy as np
 
 from .crossover_policy import CrossoverPolicy
-from .evaluation import EvaluationConfig, EvaluationTask, estimate_population, estimate_selected_individuals
+from .evaluation import EvaluationConfig, EvaluationTask, estimate_population, estimate_selected_individuals, estimate_task_population
 from .exceptions import TardigradasException
 from .gen_types import CrossoverBitType, CrossoverFloatType, GenType
 from .individual import Individual
@@ -835,6 +835,21 @@ class Tardigradas:
     def estimate_population(self) -> None:
         estimate_population(self, self.evaluation)
 
+    def _ensure_population_initialized(self) -> None:
+        if not self.population:
+            raise TardigradasException("population is not initialized, call population_init() first")
+
+    def evaluate_population(self) -> None:
+        self._ensure_population_initialized()
+        self._ensure_population_origins()
+        if self.problem.has_evaluation_tasks():
+            if self.elit_estimates_count != 1:
+                raise ValueError("task-based evaluation currently requires elit_estimates_count=1")
+            estimate_task_population(self, self.evaluation)
+            return
+        self.estimate_population()
+        self._estimate_elites()
+
     def _elite_indices(self) -> np.ndarray:
         if self.n_elits <= 0 or self.scores.size == 0:
             return np.zeros(0, dtype=int)
@@ -919,12 +934,16 @@ class Tardigradas:
     # ------------------------------------------------------------------
 
     def step(self) -> None:
-        if not self.population:
-            raise TardigradasException("population is not initialized, call population_init() first")
+        self.evaluate_population()
+        self.advance_generation_from_scores()
+
+    def advance_generation_from_scores(self) -> None:
+        self._ensure_population_initialized()
+
+        if len(self.full_scores) != len(self.population) or self.scores.size != len(self.population):
+            raise TardigradasException("population scores are not available, call evaluate_population() first")
 
         self._ensure_population_origins()
-        self.estimate_population()
-        self._estimate_elites()
         self.step_population_origins = [self._clone_population_origin(origin) for origin in self.population_origins]
 
         n_generation_slots = self.population_size - self.n_elits

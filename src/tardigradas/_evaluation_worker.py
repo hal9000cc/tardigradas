@@ -9,6 +9,7 @@ from typing import Any
 from .engine import Tardigradas
 from .evaluation import EvaluationContext, normalize_fitness_score
 from .exceptions import EvaluationFailure
+from .task_evaluation import EvaluationTaskResult, EvaluationTaskSpec, TaskEvaluationContext
 
 
 def _resolve_qualified_name(module_name: str, qualified_name: str) -> Any:
@@ -16,6 +17,19 @@ def _resolve_qualified_name(module_name: str, qualified_name: str) -> Any:
     for part in qualified_name.split("."):
         value = getattr(value, part)
     return value
+
+
+def _serialize_task_result(task_result: Any) -> dict[str, Any]:
+    return {
+        "task_id": task_result.task_id,
+        "individual_index": int(task_result.individual_index),
+        "ok": bool(task_result.ok),
+        "score": task_result.score,
+        "payload": task_result.payload,
+        "retryable": bool(task_result.retryable),
+        "failure_kind": task_result.failure_kind,
+        "error_message": task_result.error_message,
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -28,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
         request = pickle.load(file)
 
     response_path = Path(request["response_path"])
+    mode = str(request.get("mode", "fitness"))
     try:
         problem = _resolve_qualified_name(
             request["problem_module"],
@@ -43,13 +58,57 @@ def main(argv: list[str] | None = None) -> int:
             elit_estimates_count=int(request.get("elit_estimates_count", 1)),
         )
         individual = engine.create_individual(chromo=request["chromo"])
-        individual.evaluation_context = EvaluationContext(
-            generation=int(request["generation"]),
-            individual_index=int(request["individual_index"]),
-            attempt=int(request["attempt"]),
-        )
-        score = normalize_fitness_score(individual.fitness()).tolist()
-        response = {"ok": True, "score": score}
+        if mode == "task":
+            task_payload = request.get("task")
+            if not isinstance(task_payload, dict):
+                raise ValueError("task mode request must contain a task payload dictionary")
+            task = EvaluationTaskSpec(
+                task_id=str(task_payload["task_id"]),
+                individual_index=int(task_payload["individual_index"]),
+                generation=int(task_payload["generation"]),
+                task_number=int(task_payload["task_number"]),
+                payload=dict(task_payload.get("payload", {})),
+            )
+            individual.evaluation_context = TaskEvaluationContext(
+                generation=int(request["generation"]),
+                individual_index=int(request["individual_index"]),
+                population_size=int(request["population_size"]),
+                evaluation_number=1,
+                attempt=int(request["attempt"]),
+                task_id=task.task_id,
+                task_number=int(task.task_number),
+            )
+            try:
+                task_result = problem.evaluate_task(individual, task, individual.evaluation_context)
+            except EvaluationFailure as exc:
+                task_result = EvaluationTaskResult(
+                    task_id=task.task_id,
+                    individual_index=int(task.individual_index),
+                    ok=False,
+                    payload=dict(exc.details),
+                    retryable=bool(exc.retryable),
+                    failure_kind=exc.failure_kind,
+                    error_message=exc.error_message if exc.error_message is not None else str(exc),
+                )
+            except Exception as exc:
+                task_result = EvaluationTaskResult(
+                    task_id=task.task_id,
+                    individual_index=int(task.individual_index),
+                    ok=False,
+                    payload={"error_type": type(exc).__name__},
+                    retryable=False,
+                    failure_kind="exception",
+                    error_message=str(exc),
+                )
+            response = {"ok": True, "task_result": _serialize_task_result(task_result)}
+        else:
+            individual.evaluation_context = EvaluationContext(
+                generation=int(request["generation"]),
+                individual_index=int(request["individual_index"]),
+                attempt=int(request["attempt"]),
+            )
+            score = normalize_fitness_score(individual.fitness()).tolist()
+            response = {"ok": True, "score": score}
         with response_path.open("wb") as file:
             pickle.dump(response, file)
         return 0

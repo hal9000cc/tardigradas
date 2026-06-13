@@ -6,15 +6,21 @@ from typing import Any, cast
 import numpy as np
 import pytest
 
+import tardigradas._task_runtime as task_runtime_module
 import tardigradas.evaluation as evaluation_module
 from tardigradas import (
     ChromosomeSchema,
     EvaluationConfig,
+    EvaluationTaskResult,
+    EvaluationTaskSpec,
     GenType,
     IncompleteEpochError,
     Individual,
+    IndividualTaskState,
     PermanentEvaluationError,
     Problem,
+    TaskEvaluationContext,
+    TaskSchedulingDecision,
     Tardigradas,
     TardigradasException,
     TransientEvaluationError,
@@ -106,6 +112,262 @@ class ReorderedEliteEvaluationProblem(ImportableEvaluationProblem):
         return [primary, float(attempt)]
 
 
+class SequentialFixedTaskProblem(ImportableEvaluationProblem):
+    @staticmethod
+    def has_evaluation_tasks() -> bool:
+        return True
+
+    @staticmethod
+    def init_task_state(individual: Individual, context: TaskEvaluationContext) -> IndividualTaskState:
+        return IndividualTaskState(individual_index=context.individual_index, payload={"total": 0.0})
+
+    @staticmethod
+    def initial_evaluation_tasks(
+        individual: Individual,
+        context: TaskEvaluationContext,
+        state: IndividualTaskState,
+    ) -> list[EvaluationTaskSpec]:
+        return [
+            EvaluationTaskSpec(
+                task_id=f"g{context.generation}:i{context.individual_index}:t1",
+                individual_index=context.individual_index,
+                generation=context.generation,
+                task_number=1,
+                payload={"delta": float(individual.chromo[0])},
+            ),
+            EvaluationTaskSpec(
+                task_id=f"g{context.generation}:i{context.individual_index}:t2",
+                individual_index=context.individual_index,
+                generation=context.generation,
+                task_number=2,
+                payload={"delta": 1.0},
+            ),
+        ]
+
+    @staticmethod
+    def evaluate_task(
+        individual: Individual,
+        task: EvaluationTaskSpec,
+        context: TaskEvaluationContext,
+    ) -> EvaluationTaskResult:
+        return EvaluationTaskResult(
+            task_id=task.task_id,
+            individual_index=context.individual_index,
+            ok=True,
+            payload={"delta": float(task.payload.get("delta", 0.0)), "attempt": int(context.attempt)},
+        )
+
+    @staticmethod
+    def update_task_state(
+        individual: Individual,
+        context: TaskEvaluationContext,
+        state: IndividualTaskState,
+        result: EvaluationTaskResult,
+    ) -> TaskSchedulingDecision:
+        state.payload["total"] = float(state.payload.get("total", 0.0)) + float(result.payload.get("delta", 0.0))
+        if state.completed_count >= state.scheduled_count:
+            return TaskSchedulingDecision(ready_to_aggregate=True)
+        return TaskSchedulingDecision()
+
+    @staticmethod
+    def aggregate_task_results(
+        individual: Individual,
+        context: TaskEvaluationContext,
+        state: IndividualTaskState,
+    ) -> list[float]:
+        return [float(state.payload.get("total", 0.0)), float(state.completed_count)]
+
+
+class SequentialHybridTaskProblem(ImportableEvaluationProblem):
+    @staticmethod
+    def has_evaluation_tasks() -> bool:
+        return True
+
+    @staticmethod
+    def init_task_state(individual: Individual, context: TaskEvaluationContext) -> IndividualTaskState:
+        return IndividualTaskState(individual_index=context.individual_index, payload={"total": 0.0, "stopped": False})
+
+    @staticmethod
+    def initial_evaluation_tasks(
+        individual: Individual,
+        context: TaskEvaluationContext,
+        state: IndividualTaskState,
+    ) -> list[EvaluationTaskSpec]:
+        return [
+            EvaluationTaskSpec(
+                task_id=f"g{context.generation}:i{context.individual_index}:t1",
+                individual_index=context.individual_index,
+                generation=context.generation,
+                task_number=1,
+                payload={"delta": float(individual.chromo[0])},
+            )
+        ]
+
+    @staticmethod
+    def evaluate_task(
+        individual: Individual,
+        task: EvaluationTaskSpec,
+        context: TaskEvaluationContext,
+    ) -> EvaluationTaskResult:
+        return EvaluationTaskResult(
+            task_id=task.task_id,
+            individual_index=context.individual_index,
+            ok=True,
+            payload={"delta": float(task.payload.get("delta", 0.0)), "attempt": int(context.attempt)},
+        )
+
+    @staticmethod
+    def update_task_state(
+        individual: Individual,
+        context: TaskEvaluationContext,
+        state: IndividualTaskState,
+        result: EvaluationTaskResult,
+    ) -> TaskSchedulingDecision:
+        state.payload["total"] = float(state.payload.get("total", 0.0)) + float(result.payload.get("delta", 0.0))
+        if state.completed_count == 1:
+            if float(state.payload.get("total", 0.0)) < 0.0:
+                state.payload["stopped"] = True
+                return TaskSchedulingDecision(stop_individual=True, ready_to_aggregate=True)
+            return TaskSchedulingDecision(
+                new_tasks=[
+                    EvaluationTaskSpec(
+                        task_id=f"g{context.generation}:i{context.individual_index}:t2",
+                        individual_index=context.individual_index,
+                        generation=context.generation,
+                        task_number=2,
+                        payload={"delta": 10.0},
+                    )
+                ]
+            )
+        return TaskSchedulingDecision(ready_to_aggregate=True)
+
+    @staticmethod
+    def aggregate_task_results(
+        individual: Individual,
+        context: TaskEvaluationContext,
+        state: IndividualTaskState,
+    ) -> list[float]:
+        if bool(state.payload.get("stopped", False)):
+            return [-999.0, float(state.completed_count)]
+        return [float(state.payload.get("total", 0.0)), float(state.completed_count)]
+
+
+class SequentialRetryTaskProblem(ImportableEvaluationProblem):
+    @staticmethod
+    def has_evaluation_tasks() -> bool:
+        return True
+
+    @staticmethod
+    def init_task_state(individual: Individual, context: TaskEvaluationContext) -> IndividualTaskState:
+        return IndividualTaskState(individual_index=context.individual_index, payload={"value": 0.0, "attempt": 0})
+
+    @staticmethod
+    def initial_evaluation_tasks(
+        individual: Individual,
+        context: TaskEvaluationContext,
+        state: IndividualTaskState,
+    ) -> list[EvaluationTaskSpec]:
+        return [
+            EvaluationTaskSpec(
+                task_id=f"g{context.generation}:i{context.individual_index}:t1",
+                individual_index=context.individual_index,
+                generation=context.generation,
+                task_number=1,
+            )
+        ]
+
+    @staticmethod
+    def evaluate_task(
+        individual: Individual,
+        task: EvaluationTaskSpec,
+        context: TaskEvaluationContext,
+    ) -> EvaluationTaskResult:
+        if context.attempt < 2:
+            raise TransientEvaluationError("temporary_resource_unavailable", message="retry me")
+        return EvaluationTaskResult(
+            task_id=task.task_id,
+            individual_index=context.individual_index,
+            ok=True,
+            payload={"value": float(individual.chromo[0]), "attempt": int(context.attempt)},
+        )
+
+    @staticmethod
+    def update_task_state(
+        individual: Individual,
+        context: TaskEvaluationContext,
+        state: IndividualTaskState,
+        result: EvaluationTaskResult,
+    ) -> TaskSchedulingDecision:
+        state.payload["value"] = float(result.payload.get("value", 0.0))
+        state.payload["attempt"] = int(result.payload.get("attempt", 0))
+        return TaskSchedulingDecision(ready_to_aggregate=True)
+
+    @staticmethod
+    def aggregate_task_results(
+        individual: Individual,
+        context: TaskEvaluationContext,
+        state: IndividualTaskState,
+    ) -> list[float]:
+        return [float(state.payload.get("value", 0.0)), float(state.payload.get("attempt", 0))]
+
+
+class SequentialUnhandledFailureTaskProblem(ImportableEvaluationProblem):
+    @staticmethod
+    def has_evaluation_tasks() -> bool:
+        return True
+
+    @staticmethod
+    def init_task_state(individual: Individual, context: TaskEvaluationContext) -> IndividualTaskState:
+        return IndividualTaskState(individual_index=context.individual_index)
+
+    @staticmethod
+    def initial_evaluation_tasks(
+        individual: Individual,
+        context: TaskEvaluationContext,
+        state: IndividualTaskState,
+    ) -> list[EvaluationTaskSpec]:
+        return [
+            EvaluationTaskSpec(
+                task_id=f"g{context.generation}:i{context.individual_index}:t1",
+                individual_index=context.individual_index,
+                generation=context.generation,
+                task_number=1,
+            )
+        ]
+
+    @staticmethod
+    def evaluate_task(
+        individual: Individual,
+        task: EvaluationTaskSpec,
+        context: TaskEvaluationContext,
+    ) -> EvaluationTaskResult:
+        return EvaluationTaskResult(
+            task_id=task.task_id,
+            individual_index=context.individual_index,
+            ok=False,
+            retryable=False,
+            failure_kind="invalid_segment",
+            error_message="bad segment",
+        )
+
+    @staticmethod
+    def update_task_state(
+        individual: Individual,
+        context: TaskEvaluationContext,
+        state: IndividualTaskState,
+        result: EvaluationTaskResult,
+    ) -> TaskSchedulingDecision:
+        return TaskSchedulingDecision()
+
+    @staticmethod
+    def aggregate_task_results(
+        individual: Individual,
+        context: TaskEvaluationContext,
+        state: IndividualTaskState,
+    ) -> list[float]:
+        return [0.0]
+
+
 def test_evaluation_config_validates_values() -> None:
     with pytest.raises(ValueError, match="workers"):
         EvaluationConfig(workers=0)
@@ -136,6 +398,128 @@ def test_parallel_evaluation_matches_expected_scores() -> None:
     np.testing.assert_allclose(engine.full_scores[:, 1], np.array([0.0, 1.0, 2.0]))
     np.testing.assert_allclose(engine.full_scores[:, 2], np.array([1.0, 1.0, 1.0]))
     assert engine.evaluation_state is None
+
+
+def test_sequential_task_evaluation_aggregates_fixed_task_results() -> None:
+    engine = create_engine(problem=SequentialFixedTaskProblem, population_size=2, n_elits=1)
+    engine.population = build_population(engine, [[1.0], [2.0]])
+
+    engine.evaluate_population()
+
+    np.testing.assert_allclose(engine.full_scores, np.array([[2.0, 2.0], [3.0, 2.0]]))
+    np.testing.assert_allclose(engine.scores, np.array([2.0, 3.0]))
+    assert engine.evaluation_state is None
+
+
+def test_sequential_task_evaluation_supports_hybrid_continue_or_stop_policy() -> None:
+    engine = create_engine(problem=SequentialHybridTaskProblem, population_size=2, n_elits=1)
+    engine.population = build_population(engine, [[-1.0], [2.0]])
+
+    engine.evaluate_population()
+
+    np.testing.assert_allclose(engine.full_scores, np.array([[-999.0, 1.0], [12.0, 2.0]]))
+    np.testing.assert_allclose(engine.scores, np.array([-999.0, 12.0]))
+
+
+def test_sequential_task_evaluation_retries_retryable_task_per_task_id() -> None:
+    engine = create_engine(
+        problem=SequentialRetryTaskProblem,
+        population_size=1,
+        n_elits=0,
+        evaluation=EvaluationConfig(workers=1, max_attempts=2),
+    )
+    engine.population = build_population(engine, [[5.0]])
+
+    engine.evaluate_population()
+
+    np.testing.assert_allclose(engine.full_scores, np.array([[5.0, 2.0]]))
+    assert engine.evaluation_state is None
+
+
+def test_task_evaluation_rejects_elite_rechecks_in_first_version() -> None:
+    engine = create_engine(
+        problem=SequentialFixedTaskProblem,
+        population_size=1,
+        n_elits=0,
+        elit_estimates_count=2,
+    )
+    engine.population = build_population(engine, [[1.0]])
+
+    with pytest.raises(ValueError, match="elit_estimates_count=1"):
+        engine.evaluate_population()
+
+
+def test_sequential_task_evaluation_reports_missing_when_policy_does_not_handle_failure() -> None:
+    engine = create_engine(problem=SequentialUnhandledFailureTaskProblem, population_size=1, n_elits=0)
+    engine.population = build_population(engine, [[1.0]])
+
+    with pytest.raises(IncompleteEpochError) as error:
+        engine.evaluate_population()
+
+    assert error.value.missing_indices == [0]
+    assert engine.evaluation_state is not None
+    evaluation_state = cast(dict[str, Any], engine.evaluation_state)
+    assert evaluation_state["phase"] == "incomplete_task_population"
+    assert evaluation_state["missing_indices"] == [0]
+
+
+def test_parallel_task_evaluation_aggregates_fixed_task_results() -> None:
+    engine = create_engine(
+        problem=SequentialFixedTaskProblem,
+        population_size=2,
+        n_elits=1,
+        evaluation=EvaluationConfig(workers=2),
+    )
+    engine.population = build_population(engine, [[1.0], [2.0]])
+
+    engine.evaluate_population()
+
+    np.testing.assert_allclose(engine.full_scores, np.array([[2.0, 2.0], [3.0, 2.0]]))
+    np.testing.assert_allclose(engine.scores, np.array([2.0, 3.0]))
+    assert engine.evaluation_state is None
+
+
+def test_parallel_task_evaluation_retries_retryable_task_per_task_id() -> None:
+    engine = create_engine(
+        problem=SequentialRetryTaskProblem,
+        population_size=1,
+        n_elits=0,
+        evaluation=EvaluationConfig(workers=2, max_attempts=2),
+    )
+    engine.population = build_population(engine, [[5.0]])
+
+    engine.evaluate_population()
+
+    np.testing.assert_allclose(engine.full_scores, np.array([[5.0, 2.0]]))
+    assert engine.evaluation_state is None
+
+
+def test_parallel_task_evaluation_restores_in_flight_task_and_preserves_attempt_counter() -> None:
+    engine = create_engine(
+        problem=SequentialRetryTaskProblem,
+        population_size=1,
+        n_elits=0,
+        evaluation=EvaluationConfig(workers=2, max_attempts=2),
+    )
+    engine.population = build_population(engine, [[5.0]])
+    state = task_runtime_module.create_task_evaluation_state(engine, max_attempts=2)
+    task = cast(EvaluationTaskSpec, state["ready_tasks"].pop(0))
+    state["attempts"][task.task_id] = 1
+    state["in_flight"] = {task.task_id: {"task": task, "attempt": 1}}
+    engine.evaluation_state = state
+
+    restored = create_engine(
+        problem=SequentialRetryTaskProblem,
+        population_size=1,
+        n_elits=0,
+        evaluation=EvaluationConfig(workers=2, max_attempts=2),
+    )
+    restored.restore_from_dict(engine.state_dict())
+
+    restored.evaluate_population()
+
+    np.testing.assert_allclose(restored.full_scores, np.array([[5.0, 2.0]]))
+    assert restored.evaluation_state is None
 
 
 def test_parallel_evaluation_retries_failed_workers() -> None:
