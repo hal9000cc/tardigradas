@@ -22,6 +22,7 @@ def test_state_dict_contains_critical_runtime_fields(engine) -> None:
     assert state["validate_scores_history"] == engine.validate_scores_history
     assert state["selection_alpha"] == engine.selection_alpha
     assert state["selection_uniform_mix"] == engine.selection_uniform_mix
+    assert state["elit_estimates_count"] == engine.elit_estimates_count
 
 
 def test_restore_from_dict_restores_population_and_best_state(engine) -> None:
@@ -48,6 +49,7 @@ def test_restore_from_dict_restores_population_and_best_state(engine) -> None:
     assert restored.validate_scores_history == engine.validate_scores_history
     assert restored.selection_alpha == engine.selection_alpha
     assert restored.selection_uniform_mix == engine.selection_uniform_mix
+    assert restored.elit_estimates_count == engine.elit_estimates_count
 
 
 def test_restore_from_dict_preserves_selection_parameters() -> None:
@@ -58,6 +60,15 @@ def test_restore_from_dict_preserves_selection_parameters() -> None:
 
     assert restored.selection_alpha == 0.25
     assert restored.selection_uniform_mix == 0.2
+
+
+def test_restore_from_dict_preserves_elit_estimates_count() -> None:
+    engine = create_engine(elit_estimates_count=4)
+
+    restored = create_engine()
+    restored.restore_from_dict(engine.state_dict())
+
+    assert restored.elit_estimates_count == 4
 
 
 def test_save_to_file_and_restore_from_file_round_trip(engine, tmp_path) -> None:

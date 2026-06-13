@@ -4,7 +4,17 @@ import tardigradas.engine as engine_module
 import numpy as np
 import pytest
 
-from tardigradas import CrossoverBitType, CrossoverFloatType, CrossoverPolicy, Tardigradas, TardigradasException
+from tardigradas import (
+    ChromosomeSchema,
+    CrossoverBitType,
+    CrossoverFloatType,
+    CrossoverPolicy,
+    GenType,
+    Individual,
+    Problem,
+    Tardigradas,
+    TardigradasException,
+)
 from tests.helpers import (
     DummyProblem,
     FixedGenesProblem,
@@ -34,6 +44,8 @@ from tests.helpers import (
         {"selection_uniform_mix": -0.1},
         {"selection_uniform_mix": 1.1},
         {"selection_uniform_mix": float("inf")},
+        {"elit_estimates_count": 0},
+        {"elit_estimates_count": -1},
         {"crossover_fraction": 0.8, "fresh_blood_fraction": 0.3},
         {"n_elits": -1},
         {"n_elits": 6},
@@ -102,6 +114,99 @@ def test_engine_uses_default_selection_parameters() -> None:
 
     assert engine.selection_alpha == 0.5
     assert engine.selection_uniform_mix == 0.0
+
+
+def test_engine_uses_default_elit_estimates_count() -> None:
+    engine = create_engine()
+
+    assert engine.elit_estimates_count == 1
+
+
+def test_estimate_elites_rechecks_new_best_individual_until_target_count(monkeypatch) -> None:
+    attempts_log: list[tuple[int, int]] = []
+
+    class NoisyLeaderProblem(Problem):
+        @staticmethod
+        def init_environment(tardigradas: Tardigradas) -> None:
+            return None
+
+        @staticmethod
+        def gen_info(tardigradas: Tardigradas) -> ChromosomeSchema:
+            return ChromosomeSchema(gen_types=[GenType.int], bounds=([0], [2]))
+
+        @staticmethod
+        def fitness(individual: Individual) -> float:
+            context = individual.evaluation_context
+            attempt = 1 if context is None else int(context.attempt)
+            marker = int(individual[0])
+            attempts_log.append((marker, attempt))
+            if marker == 0:
+                return 10.0 if attempt == 1 else 0.0
+            if marker == 1:
+                return 9.0
+            return 8.0
+
+    engine = create_engine(
+        problem=NoisyLeaderProblem,
+        population_size=3,
+        crossover_fraction=0.0,
+        n_elits=1,
+        elit_estimates_count=2,
+    )
+    engine.population = build_population(engine, [[0.0], [1.0], [2.0]])
+    monkeypatch.setattr(engine, "mutation", lambda parent_indices: [engine.create_individual(chromo=[2.0]) for _ in parent_indices])
+    monkeypatch.setattr(engine, "kill_doubles", lambda: None)
+
+    engine.step()
+
+    assert engine.step_best_individual is not None
+    assert engine.step_best_individual.chromo.tolist() == [1.0]
+    assert engine.step_score == pytest.approx(9.0)
+    assert (0, 2) in attempts_log
+    assert (1, 2) in attempts_log
+    assert (2, 2) not in attempts_log
+
+
+def test_estimate_elites_rechecks_current_n_elits_until_all_have_target_count() -> None:
+    attempts_log: list[tuple[int, int]] = []
+
+    class NoisyTopTwoProblem(Problem):
+        @staticmethod
+        def init_environment(tardigradas: Tardigradas) -> None:
+            return None
+
+        @staticmethod
+        def gen_info(tardigradas: Tardigradas) -> ChromosomeSchema:
+            return ChromosomeSchema(gen_types=[GenType.int], bounds=([0], [2]))
+
+        @staticmethod
+        def fitness(individual: Individual) -> float:
+            context = individual.evaluation_context
+            attempt = 1 if context is None else int(context.attempt)
+            marker = int(individual[0])
+            attempts_log.append((marker, attempt))
+            if marker == 0:
+                return 10.0 if attempt == 1 else 0.0
+            if marker == 1:
+                return 9.0
+            return 8.5 if attempt > 1 else 8.0
+
+    engine = create_engine(
+        problem=NoisyTopTwoProblem,
+        population_size=3,
+        n_elits=2,
+        elit_estimates_count=2,
+    )
+    engine.population = build_population(engine, [[0.0], [1.0], [2.0]])
+
+    engine.estimate_population()
+    engine._estimate_elites()
+
+    np.testing.assert_allclose(engine.scores, np.array([5.0, 9.0, 8.25]))
+    assert engine._elite_indices().tolist() == [1, 2]
+    assert (0, 2) in attempts_log
+    assert (1, 2) in attempts_log
+    assert (2, 2) in attempts_log
 
 
 def test_new_valid_individual_returns_valid_individual(engine) -> None:

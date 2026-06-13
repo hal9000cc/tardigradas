@@ -184,6 +184,7 @@ def create_engine(
     evaluation: EvaluationConfig | None = None,
     selection_alpha: float = 0.5,
     selection_uniform_mix: float = 0.0,
+    elit_estimates_count: int = 1,
 ) -> Tardigradas:
     return Tardigradas(
         problem=problem,
@@ -196,4 +197,5 @@ def create_engine(
         evaluation=evaluation,
         selection_alpha=selection_alpha,
         selection_uniform_mix=selection_uniform_mix,
+        elit_estimates_count=elit_estimates_count,
     )

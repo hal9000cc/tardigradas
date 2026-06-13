@@ -8,7 +8,7 @@ from typing import Callable, Optional, Sequence, TypeVar, Union
 import numpy as np
 
 from .crossover_policy import CrossoverPolicy
-from .evaluation import EvaluationConfig, estimate_population
+from .evaluation import EvaluationConfig, EvaluationTask, estimate_population, estimate_selected_individuals
 from .exceptions import TardigradasException
 from .gen_types import CrossoverBitType, CrossoverFloatType, GenType
 from .individual import Individual
@@ -44,6 +44,7 @@ class Tardigradas:
         evaluation: Optional[EvaluationConfig] = None,
         selection_alpha: float = 0.5,
         selection_uniform_mix: float = 0.0,
+        elit_estimates_count: int = 1,
     ) -> None:
         if not issubclass(problem, Problem):
             raise TypeError("problem must be a Problem subclass")
@@ -57,6 +58,8 @@ class Tardigradas:
             raise ValueError("selection_alpha must be a finite non-negative number")
         if not np.isfinite(selection_uniform_mix) or selection_uniform_mix < 0.0 or selection_uniform_mix > 1.0:
             raise ValueError("selection_uniform_mix must be a finite number in range [0, 1]")
+        if int(elit_estimates_count) < 1:
+            raise ValueError("elit_estimates_count must be a positive integer")
 
         self.problem = problem
         self.environment = fitness_environment
@@ -66,6 +69,7 @@ class Tardigradas:
         self.gen_mutation_fraction = float(gen_mutation_fraction)
         self.selection_alpha = float(selection_alpha)
         self.selection_uniform_mix = float(selection_uniform_mix)
+        self.elit_estimates_count = int(elit_estimates_count)
         self.n_elits = 1 if n_elits is None else int(n_elits)
         if crossover_policy is not None and not isinstance(crossover_policy, CrossoverPolicy):
             raise TypeError("crossover_policy must be CrossoverPolicy or None")
@@ -831,6 +835,45 @@ class Tardigradas:
     def estimate_population(self) -> None:
         estimate_population(self, self.evaluation)
 
+    def _elite_indices(self) -> np.ndarray:
+        if self.n_elits <= 0 or self.scores.size == 0:
+            return np.zeros(0, dtype=int)
+        return np.argsort(-self.scores)[: self.n_elits]
+
+    def _estimate_elites(self) -> None:
+        if self.elit_estimates_count <= 1 or self.n_elits <= 0 or not self.population:
+            return
+        if len(self.full_scores) != len(self.population):
+            raise TardigradasException("full_scores must match population size before elite re-evaluation")
+
+        score_sums = np.array(self.full_scores, dtype=float, copy=True)
+        score_counts = np.ones(len(self.population), dtype=int)
+
+        while True:
+            averaged_scores = score_sums / score_counts[:, None]
+            self.full_scores = averaged_scores
+            self.scores = averaged_scores[:, 0]
+
+            tasks: list[EvaluationTask] = []
+            for index in self._elite_indices():
+                current_count = int(score_counts[int(index)])
+                for evaluation_number in range(current_count + 1, self.elit_estimates_count + 1):
+                    tasks.append(
+                        EvaluationTask(
+                            individual_index=int(index),
+                            evaluation_number=int(evaluation_number),
+                        )
+                    )
+
+            if not tasks:
+                return
+
+            extra_scores = estimate_selected_individuals(self, tasks, self.evaluation, report_progress=False)
+            for task, score_row in zip(tasks, extra_scores):
+                individual_index = int(task.individual_index)
+                score_sums[individual_index] += score_row
+                score_counts[individual_index] += 1
+
     def kill_doubles(self) -> None:
         self.n_killed_doubles = 0
         self._ensure_population_origins()
@@ -881,6 +924,7 @@ class Tardigradas:
 
         self._ensure_population_origins()
         self.estimate_population()
+        self._estimate_elites()
         self.step_population_origins = [self._clone_population_origin(origin) for origin in self.population_origins]
 
         n_generation_slots = self.population_size - self.n_elits

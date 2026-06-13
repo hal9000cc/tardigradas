@@ -40,6 +40,7 @@ def main(argv: list[str] | None = None) -> int:
             fresh_blood_fraction=float(request["fresh_blood_fraction"]),
             gen_mutation_fraction=float(request["gen_mutation_fraction"]),
             n_elits=int(request["n_elits"]),
+            elit_estimates_count=int(request.get("elit_estimates_count", 1)),
         )
         individual = engine.create_individual(chromo=request["chromo"])
         individual.evaluation_context = EvaluationContext(

@@ -39,6 +39,12 @@ class EvaluationContext:
 
 
 @dataclass(frozen=True)
+class EvaluationTask:
+    individual_index: int
+    evaluation_number: int = 1
+
+
+@dataclass(frozen=True)
 class WorkerResult:
     ok: bool
     score: Optional[list[float]] = None
@@ -159,6 +165,23 @@ class _RunningTask:
     index: int
     attempt: int
     response_path: Path
+    task_position: int | None = None
+
+
+def _context_attempt_value(evaluation_number: int, launch_attempt: int, max_attempts: int) -> int:
+    safe_max_attempts = max(1, int(max_attempts))
+    return 1 + (int(evaluation_number) - 1) * safe_max_attempts + int(launch_attempt) - 1
+
+
+def _notify_batch_progress(
+    engine: Tardigradas,
+    completed_count: int,
+    total_count: int,
+    report_progress: bool,
+) -> None:
+    if not report_progress or engine.fitness_progress_fun is None or total_count <= 0:
+        return
+    engine.fitness_progress_fun(engine, completed_count / total_count)
 
 
 def _write_worker_request(
@@ -179,6 +202,7 @@ def _write_worker_request(
         "fresh_blood_fraction": float(engine.fresh_blood_fraction),
         "gen_mutation_fraction": float(engine.gen_mutation_fraction),
         "n_elits": int(engine.n_elits),
+        "elit_estimates_count": int(getattr(engine, "elit_estimates_count", 1)),
         "generation": int(engine.iterations),
         "individual_index": int(index),
         "attempt": int(attempt),
@@ -475,6 +499,190 @@ def estimate_population_subprocess(engine: Tardigradas, config: EvaluationConfig
     engine.full_scores = full_scores
     engine.scores = scores
     engine.evaluation_state = None
+
+
+def estimate_selected_individuals_sequential(
+    engine: Tardigradas,
+    tasks: list[EvaluationTask],
+    report_progress: bool = False,
+) -> np.ndarray:
+    if not tasks:
+        return np.zeros((0, 1), dtype=float)
+
+    max_attempts = 1 if engine.evaluation is None else max(1, int(engine.evaluation.max_attempts))
+    score_rows = []
+    for task_position, task in enumerate(tasks):
+        individual = engine.population[task.individual_index]
+        previous_context = individual.evaluation_context
+        individual.evaluation_context = EvaluationContext(
+            generation=int(engine.iterations),
+            individual_index=int(task.individual_index),
+            attempt=_context_attempt_value(
+                evaluation_number=int(task.evaluation_number),
+                launch_attempt=1,
+                max_attempts=max_attempts,
+            ),
+        )
+        try:
+            score_rows.append(individual.fitness())
+        finally:
+            individual.evaluation_context = previous_context
+        _notify_batch_progress(engine, task_position + 1, len(tasks), report_progress)
+
+    return np.vstack(score_rows)
+
+
+def estimate_selected_individuals_subprocess(
+    engine: Tardigradas,
+    tasks: list[EvaluationTask],
+    config: EvaluationConfig,
+    report_progress: bool = False,
+) -> np.ndarray:
+    if not tasks:
+        return np.zeros((0, 1), dtype=float)
+
+    problem_module, problem_qualified_name = problem_import_path(engine.problem)
+    scores: list[Optional[list[float]]] = [None for _ in tasks]
+    launch_attempts = [0 for _ in tasks]
+    missing_positions: set[int] = set()
+    deferred_positions: set[int] = set()
+    final_attempts: dict[int, int] = {}
+    pending = deque(range(len(tasks)))
+    deferred = deque[int]()
+    in_flight: list[_RunningTask] = []
+    finalizing_transient = False
+    schedule_allowed = True
+    can_schedule_deferred = False
+
+    def completed_count() -> int:
+        return sum(score is not None for score in scores) + len(missing_positions)
+
+    def notify_progress() -> None:
+        _notify_batch_progress(engine, completed_count(), len(tasks), report_progress)
+
+    def mark_missing(task_position: int) -> None:
+        missing_positions.add(int(task_position))
+        deferred_positions.discard(int(task_position))
+        notify_progress()
+
+    with tempfile.TemporaryDirectory(prefix="tardigradas-extra-eval-") as temp_name:
+        temp_dir = Path(temp_name)
+        while pending or deferred or in_flight:
+            if not pending and not in_flight and deferred:
+                finalizing_transient = True
+                pending.extend(deferred)
+                deferred.clear()
+                deferred_positions.clear()
+                schedule_allowed = True
+                can_schedule_deferred = True
+
+            while schedule_allowed and len(in_flight) < config.workers and (pending or deferred):
+                from_deferred = False
+                if deferred and (finalizing_transient or can_schedule_deferred):
+                    task_position = int(deferred.popleft())
+                    deferred_positions.discard(task_position)
+                    from_deferred = True
+                elif pending:
+                    task_position = int(pending.popleft())
+                else:
+                    break
+
+                if scores[task_position] is not None or task_position in missing_positions:
+                    continue
+
+                if not finalizing_transient and not from_deferred and launch_attempts[task_position] >= config.max_attempts:
+                    mark_missing(task_position)
+                    continue
+
+                if finalizing_transient and int(final_attempts.get(task_position, 0)) >= config.max_attempts:
+                    mark_missing(task_position)
+                    continue
+
+                launch_attempts[task_position] += 1
+                task = tasks[task_position]
+                context_attempt = _context_attempt_value(
+                    evaluation_number=task.evaluation_number,
+                    launch_attempt=launch_attempts[task_position],
+                    max_attempts=config.max_attempts,
+                )
+                running_task = _start_worker(
+                    temp_dir,
+                    engine,
+                    task.individual_index,
+                    context_attempt,
+                    problem_module,
+                    problem_qualified_name,
+                )
+                running_task.task_position = task_position
+                in_flight.append(running_task)
+            schedule_allowed = False
+            can_schedule_deferred = False
+
+            completed: list[_RunningTask] = []
+            for task in in_flight:
+                if task.process.poll() is not None:
+                    completed.append(task)
+
+            if not completed:
+                time.sleep(0.01)
+                continue
+
+            allow_next_schedule = False
+            for task in completed:
+                in_flight.remove(task)
+                task_position = task.task_position
+                if task_position is None:
+                    raise TardigradasException("internal evaluation error: missing task position")
+
+                result = _read_worker_result(task)
+                if result.ok:
+                    allow_next_schedule = True
+                    can_schedule_deferred = True
+                    scores[task_position] = result.score
+                    final_attempts.pop(task_position, None)
+                    notify_progress()
+                    continue
+
+                if result.retryable:
+                    if finalizing_transient:
+                        final_attempts[task_position] = int(final_attempts.get(task_position, 0)) + 1
+                        if int(final_attempts[task_position]) < config.max_attempts:
+                            pending.append(task_position)
+                            allow_next_schedule = True
+                        else:
+                            mark_missing(task_position)
+                            allow_next_schedule = True
+                    elif task_position not in missing_positions and task_position not in deferred_positions:
+                        deferred.append(task_position)
+                        deferred_positions.add(task_position)
+                    continue
+
+                allow_next_schedule = True
+                can_schedule_deferred = True
+                if result.failure_mode == "permanent":
+                    mark_missing(task_position)
+                elif launch_attempts[task_position] < config.max_attempts:
+                    pending.append(task_position)
+                else:
+                    mark_missing(task_position)
+            schedule_allowed = allow_next_schedule or (not in_flight and bool(pending or deferred))
+
+    if any(score is None for score in scores):
+        missing_indices = sorted({tasks[position].individual_index for position, score in enumerate(scores) if score is None})
+        raise IncompleteEpochError(missing_indices)
+
+    return np.vstack([normalize_fitness_score(score) for score in scores])
+
+
+def estimate_selected_individuals(
+    engine: Tardigradas,
+    tasks: list[EvaluationTask],
+    config: Optional[EvaluationConfig],
+    report_progress: bool = False,
+) -> np.ndarray:
+    if config is None or config.workers <= 1:
+        return estimate_selected_individuals_sequential(engine, tasks, report_progress=report_progress)
+    return estimate_selected_individuals_subprocess(engine, tasks, config, report_progress=report_progress)
 
 
 def estimate_population(engine: Tardigradas, config: Optional[EvaluationConfig]) -> None:

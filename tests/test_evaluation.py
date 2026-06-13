@@ -91,6 +91,21 @@ class PermanentEvaluationProblem(ImportableEvaluationProblem):
         return float(individual.chromo[0])
 
 
+class ReorderedEliteEvaluationProblem(ImportableEvaluationProblem):
+    @staticmethod
+    def fitness(individual: Individual) -> list[float]:
+        context = individual.evaluation_context
+        attempt = 1 if context is None else int(context.attempt)
+        marker = int(individual.chromo[0])
+        if marker == 1:
+            primary = 10.0 if attempt == 1 else 0.0
+        elif marker == 2:
+            primary = 9.0
+        else:
+            primary = 8.0
+        return [primary, float(attempt)]
+
+
 def test_evaluation_config_validates_values() -> None:
     with pytest.raises(ValueError, match="workers"):
         EvaluationConfig(workers=0)
@@ -305,6 +320,25 @@ def test_parallel_evaluation_reports_incomplete_epoch_after_all_possible_work() 
     assert scores[1] is None
     assert scores[2] == [3.0]
     assert evaluation_state["attempts"] == [1, 2, 1]
+
+
+def test_parallel_elite_re_evaluation_rechecks_new_leader_and_averages_full_scores() -> None:
+    engine = create_engine(
+        problem=ReorderedEliteEvaluationProblem,
+        population_size=3,
+        n_elits=1,
+        elit_estimates_count=2,
+        evaluation=EvaluationConfig(workers=2),
+    )
+    engine.population = build_population(engine, [[1.0], [2.0], [3.0]])
+
+    engine.estimate_population()
+    engine._estimate_elites()
+
+    np.testing.assert_allclose(engine.scores, np.array([5.0, 9.0, 8.0]))
+    np.testing.assert_allclose(engine.full_scores[0], np.array([5.0, 2.5]))
+    np.testing.assert_allclose(engine.full_scores[1], np.array([9.0, 2.5]))
+    np.testing.assert_allclose(engine.full_scores[2], np.array([8.0, 1.0]))
 
 
 def test_parallel_evaluation_restores_partial_state_and_only_calculates_missing_scores() -> None:

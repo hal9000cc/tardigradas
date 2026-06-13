@@ -26,6 +26,7 @@ def state_dict(engine: Any) -> dict[str, Any]:
         "gen_mutation_fraction": engine.gen_mutation_fraction,
         "selection_alpha": getattr(engine, "selection_alpha", 0.5),
         "selection_uniform_mix": getattr(engine, "selection_uniform_mix", 0.0),
+        "elit_estimates_count": getattr(engine, "elit_estimates_count", 1),
         "chromo_bounds_max": engine.chromo_bounds_max,
         "chromo_bounds_min": engine.chromo_bounds_min,
         "chromo_gen_groups": engine.chromo_gen_groups,
@@ -82,6 +83,7 @@ def restore_from_dict(engine: Any, state: dict[str, Any]) -> None:
     engine.selection_uniform_mix = float(
         state.get("selection_uniform_mix", getattr(engine, "selection_uniform_mix", 0.0))
     )
+    engine.elit_estimates_count = int(state.get("elit_estimates_count", getattr(engine, "elit_estimates_count", 1)))
     engine.n_elits = int(state.get("n_elits", engine.n_elits))
     engine.population_size = int(state.get("population_size", engine.population_size))
     engine.scores = np.array(state.get("scores", []), dtype=float)
